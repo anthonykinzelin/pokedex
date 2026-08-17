@@ -19,35 +19,127 @@ Run `make` to see the available commands.
 
 ## Test locally
 
-The shortest automated check is:
+### Automated test
+
+Run the complete integration test with:
 
 ```bash
 make test-local
 ```
 
-It installs dependencies, validates and builds the SAM application, starts DynamoDB Local, creates and seeds the table, starts the API, and verifies success and error responses. Stop the database afterward with:
+It creates a user, adds a Pokemon, lists both collections, creates a purchase, and verifies the validation and `404` responses.
 
-```bash
-make local-stop
-```
+### Manual test with Postman
 
-For interactive testing with curl or Postman, keep the local API running:
+Start DynamoDB Local and the API. Keep this terminal open:
 
 ```bash
 make local
 ```
 
-Import these files in Postman and run the collection in order:
-
-- `postman/pokedex.postman_collection.json`
-- `postman/pokedex.postman_environment.json`
-
-The token request is skipped locally because SAM Local does not enforce the Cognito authorizer by default.
-
-The required routes are:
+Do not open Postman until the terminal displays:
 
 ```text
+You can now browse to the above endpoints to invoke your functions.
+```
+
+The API is then available at `http://127.0.0.1:3000`. The `Authorizer ... skipping` messages are normal locally: Cognito is deliberately not enforced by SAM Local.
+
+Then:
+
+1. Import `postman/pokedex.postman_collection.json` into Postman.
+2. Import `postman/pokedex.postman_environment.json`.
+3. Select the **Pokedex Local** environment.
+4. Run the complete **Pokedex Lot 2 API** collection in its numbered order.
+
+The collection also contains a local `http://127.0.0.1:3000` fallback, but selecting **Pokedex Local** makes the active URL explicit.
+
+The collection automatically performs this scenario:
+
+1. skips Cognito authentication locally;
+2. generates unique `user_id` and `pokemon_id` values;
+3. creates the user with a balance of `100`;
+4. adds a Pokemon priced at `25`;
+5. verifies that both appear in their lists;
+6. purchases the Pokemon for the new user.
+
+You can also open and send each numbered Postman request manually in the same order. The `Authorization` header may remain present and empty locally; SAM Local does not enforce the Cognito authorizer unless explicitly started with authorizer support.
+
+To add the initial Ash/Misty and Pikachu/Bulbasaur records again without rebuilding the API:
+
+```bash
+make local-seed
+```
+
+To clear every local user, Pokemon and purchase and restore only the initial data:
+
+```bash
+make local-reset
+```
+
+Stop DynamoDB Local afterward with:
+
+```bash
+make local-stop
+```
+
+### If port 3000 is already in use
+
+`Address already in use` means the API did not start, even if the SAM build and DynamoDB setup succeeded. Stop a stale SAM process belonging to this project and restart:
+
+```bash
+make local-api-stop
+make local
+```
+
+The Makefile now checks the port before doing the build, so this error is reported immediately. It refuses to stop unrelated applications. Alternatively, use another port:
+
+```bash
+make local LOCAL_PORT=3002
+```
+
+When using another port, change `api_base_url` in the selected Postman environment to:
+
+```text
+http://127.0.0.1:3002
+```
+
+You can confirm that the API is reachable before running Postman:
+
+```bash
+curl -i http://127.0.0.1:3000/users
+```
+
+### Manual test with curl
+
+With `make local` still running, execute these commands in a second terminal:
+
+```bash
+curl -i -X POST http://127.0.0.1:3000/users \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"brock","username":"Brock","balance":100}'
+
+curl -i -X POST http://127.0.0.1:3000/pokemons \
+  -H 'Content-Type: application/json' \
+  -d '{"pokemonId":"onix","name":"Onix","type":"rock","price":30}'
+
+curl -i http://127.0.0.1:3000/users
+
+curl -i http://127.0.0.1:3000/pokemons
+
+curl -i -X POST http://127.0.0.1:3000/users/brock/purchases \
+  -H 'Content-Type: application/json' \
+  -d '{"pokemonId":"onix"}'
+```
+
+Expected status codes are `201` for each creation and `200` for each list. Reusing `brock` or `onix` returns `409`; run `make local-reset` or choose different IDs.
+
+Available routes:
+
+```text
+POST /users                          create a user
 GET  /users
+POST /pokemons                       add a Pokemon
 GET  /pokemons
 POST /users/{userId}/purchases   body: { "pokemonId": "pikachu" }
 ```
@@ -78,7 +170,7 @@ This deploys authentication, then the referential service, seeds demo data, and 
 postman/pokedex.generated.postman_environment.json
 ```
 
-Import that ignored generated environment together with the collection. It contains the Cognito client secret, so do not commit or share it. Select the generated environment and run the complete collection; it obtains an access token before calling all three endpoints.
+Import that ignored generated environment together with the collection. It contains the Cognito client secret, so do not commit or share it. Select the generated environment and run the complete collection; it obtains an access token before creating the test data and calling all five endpoints.
 
 Each service can also be updated independently:
 

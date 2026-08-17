@@ -1,9 +1,19 @@
 {
   "info": {
     "name": "Pokedex Lot 2 API",
-    "description": "Gets a Cognito client-credentials token, then tests all three required referential endpoints.",
+    "description": "Creates local test data, lists it, and purchases a Pokemon. With the deployed environment it first obtains a Cognito M2M token.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "variable": [
+    { "key": "api_base_url", "value": "http://127.0.0.1:3000" },
+    { "key": "auth_domain", "value": "" },
+    { "key": "client_id", "value": "" },
+    { "key": "client_secret", "value": "" },
+    { "key": "scope", "value": "pokedex/read pokedex/write" },
+    { "key": "access_token", "value": "" },
+    { "key": "user_id", "value": "ash" },
+    { "key": "pokemon_id", "value": "pikachu" }
+  ],
   "item": [
     {
       "name": "1 - Get M2M token",
@@ -33,7 +43,7 @@
           "listen": "prerequest",
           "script": {
             "exec": [
-              "if (!pm.environment.get('auth_domain')) {",
+              "if (!pm.variables.get('auth_domain')) {",
               "  pm.execution.skipRequest();",
               "}"
             ]
@@ -47,7 +57,8 @@
               "  pm.response.to.have.status(200);",
               "  const response = pm.response.json();",
               "  pm.expect(response.access_token).to.be.a('string').and.not.empty;",
-              "  pm.environment.set('access_token', response.access_token);",
+              "  pm.collectionVariables.set('access_token', response.access_token);",
+              "  if (pm.environment.name) pm.environment.set('access_token', response.access_token);",
               "});"
             ]
           }
@@ -55,7 +66,78 @@
       ]
     },
     {
-      "name": "2 - List users",
+      "name": "2 - Create user",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"userId\": \"{{user_id}}\",\n  \"username\": \"Postman Trainer\",\n  \"balance\": 100\n}"
+        },
+        "url": "{{api_base_url}}/users"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const runId = pm.variables.replaceIn('{{$guid}}');",
+              "pm.collectionVariables.set('user_id', 'user-' + runId);",
+              "pm.collectionVariables.set('pokemon_id', 'pokemon-' + runId);",
+              "if (pm.environment.name) {",
+              "  pm.environment.set('run_id', runId);",
+              "  pm.environment.set('user_id', 'user-' + runId);",
+              "  pm.environment.set('pokemon_id', 'pokemon-' + runId);",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('user created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  pm.expect(pm.response.json().userId).to.eql(pm.variables.get('user_id'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - Add Pokemon",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\",\n  \"name\": \"Postmanchu\",\n  \"type\": \"electric\",\n  \"price\": 25\n}"
+        },
+        "url": "{{api_base_url}}/pokemons"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Pokemon created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  pm.expect(pm.response.json().pokemonId).to.eql(pm.variables.get('pokemon_id'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 - List users",
       "request": {
         "method": "GET",
         "header": [
@@ -68,9 +150,11 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('users returned', function () {",
+              "pm.test('created user is listed', function () {",
               "  pm.response.to.have.status(200);",
-              "  pm.expect(pm.response.json()).to.be.an('array');",
+              "  const users = pm.response.json();",
+              "  pm.expect(users).to.be.an('array');",
+              "  pm.expect(users.some(user => user.userId === pm.variables.get('user_id'))).to.be.true;",
               "});"
             ]
           }
@@ -78,7 +162,7 @@
       ]
     },
     {
-      "name": "3 - List Pokemon",
+      "name": "5 - List Pokemon",
       "request": {
         "method": "GET",
         "header": [
@@ -91,9 +175,11 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('catalog returned', function () {",
+              "pm.test('created Pokemon is listed', function () {",
               "  pm.response.to.have.status(200);",
-              "  pm.expect(pm.response.json()).to.be.an('array');",
+              "  const pokemons = pm.response.json();",
+              "  pm.expect(pokemons).to.be.an('array');",
+              "  pm.expect(pokemons.some(pokemon => pokemon.pokemonId === pm.variables.get('pokemon_id'))).to.be.true;",
               "});"
             ]
           }
@@ -101,7 +187,7 @@
       ]
     },
     {
-      "name": "4 - Purchase Pokemon",
+      "name": "6 - Purchase Pokemon",
       "request": {
         "method": "POST",
         "header": [
@@ -121,7 +207,10 @@
             "exec": [
               "pm.test('purchase created', function () {",
               "  pm.response.to.have.status(201);",
-              "  pm.expect(pm.response.json()).to.have.property('purchaseId');",
+              "  const purchase = pm.response.json();",
+              "  pm.expect(purchase).to.have.property('purchaseId');",
+              "  pm.expect(purchase.userId).to.eql(pm.variables.get('user_id'));",
+              "  pm.expect(purchase.pokemonId).to.eql(pm.variables.get('pokemon_id'));",
               "});"
             ]
           }

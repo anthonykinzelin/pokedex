@@ -78,6 +78,8 @@ pokemon_id="pokemon-$run_id"
 
 assert_request 201 POST /users "{\"userId\":\"$user_id\",\"username\":\"Local Trainer\",\"balance\":100}" ".userId == \"$user_id\""
 assert_request 201 POST /pokemons "{\"pokemonId\":\"$pokemon_id\",\"name\":\"Localmon\",\"type\":\"test\",\"price\":25}" ".pokemonId == \"$pokemon_id\""
+assert_request 409 POST /users "{\"userId\":\"$user_id\",\"username\":\"Duplicate\",\"balance\":100}" '.message | type == "string"'
+assert_request 409 POST /pokemons "{\"pokemonId\":\"$pokemon_id\",\"name\":\"Duplicate\",\"type\":\"test\",\"price\":25}" '.message | type == "string"'
 assert_request 200 GET /users '' "type == \"array\" and any(.[]; .userId == \"$user_id\")"
 assert_request 200 GET /pokemons '' "type == \"array\" and any(.[]; .pokemonId == \"$pokemon_id\")"
 assert_request 201 POST "/users/$user_id/purchases" "{\"pokemonId\":\"$pokemon_id\"}" '.purchaseId | type == "string"'

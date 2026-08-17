@@ -15,7 +15,7 @@ SAM_DEPLOY := sam deploy --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
 
-.PHONY: help install validate build local-prepare local local-seed local-reset local-stop test-local deploy deploy-auth deploy-app seed-remote postman-env clean-stack clean-app clean-auth
+.PHONY: help install validate build check-local-port local-prepare local local-seed local-reset local-api-stop local-stop test-local deploy deploy-auth deploy-app seed-remote postman-env clean-stack clean-app clean-auth
 
 help:
 	@echo "Pokedex Lot 2"
@@ -23,7 +23,8 @@ help:
 	@echo "  make local         Start DynamoDB Local and the API on port $(LOCAL_PORT)"
 	@echo "  make local-seed    Start/seed only the local DynamoDB table"
 	@echo "  make local-reset   Clear and recreate the local DynamoDB table"
-	@echo "  make local-stop    Stop DynamoDB Local"
+	@echo "  make local-api-stop Stop a stale SAM API from this project"
+	@echo "  make local-stop    Stop the local API and DynamoDB Local"
 	@echo "  make validate      Validate both SAM templates"
 	@echo "  make build         Build the referential Lambdas"
 	@echo "  make deploy        Deploy both stacks, seed data, generate Postman env"
@@ -52,14 +53,20 @@ local-reset:
 
 local-prepare: build local-seed
 
-local: local-prepare
+check-local-port:
+	@./scripts/check-local-port.sh $(LOCAL_PORT)
+
+local: check-local-port local-prepare
 	sam local start-api --template-file .aws-sam/app/template.yaml --env-vars env.json \
 		--docker-network $(LOCAL_NETWORK) --port $(LOCAL_PORT)
 
 test-local: local-prepare
 	LOCAL_PORT=$(TEST_PORT) LOCAL_NETWORK=$(LOCAL_NETWORK) ./scripts/test-local.sh
 
-local-stop:
+local-api-stop:
+	@./scripts/stop-local-api.sh $(LOCAL_PORT)
+
+local-stop: local-api-stop
 	docker compose down
 
 deploy:
