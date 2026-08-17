@@ -1,0 +1,132 @@
+{
+  "info": {
+    "name": "Pokedex Lot 2 API",
+    "description": "Gets a Cognito client-credentials token, then tests all three required referential endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1 - Get M2M token",
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            { "key": "username", "value": "{{client_id}}", "type": "string" },
+            { "key": "password", "value": "{{client_secret}}", "type": "string" }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "grant_type", "value": "client_credentials", "type": "text" },
+            { "key": "scope", "value": "{{scope}}", "type": "text" }
+          ]
+        },
+        "url": "{{auth_domain}}/oauth2/token"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "if (!pm.environment.get('auth_domain')) {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('token returned', function () {",
+              "  pm.response.to.have.status(200);",
+              "  const response = pm.response.json();",
+              "  pm.expect(response.access_token).to.be.a('string').and.not.empty;",
+              "  pm.environment.set('access_token', response.access_token);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 - List users",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+        ],
+        "url": "{{api_base_url}}/users"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('users returned', function () {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json()).to.be.an('array');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - List Pokemon",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+        ],
+        "url": "{{api_base_url}}/pokemons"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('catalog returned', function () {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json()).to.be.an('array');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 - Purchase Pokemon",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\"\n}"
+        },
+        "url": "{{api_base_url}}/users/{{user_id}}/purchases"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('purchase created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  pm.expect(pm.response.json()).to.have.property('purchaseId');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,66 +1,83 @@
+AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Globals:
-  Function:
-    Timeout: 10
+Description: Pokedex machine-to-machine authentication service.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[a-z0-9-]+$'
 
 Resources:
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: pokedex-user-pool
-      AutoVerifiedAttributes: [email]
-      Policies:
-        PasswordPolicy:
-          MinimumLength: 8
-          RequireLowercase: true
-          RequireNumbers: true
-          RequireSymbols: false
+      UserPoolName: !Sub '${AWS::StackName}-user-pool'
+      UserPoolTags:
+        Application: pokedex
+        Environment: !Ref Env
+
+  PokedexResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      Name: Pokedex API
+      Identifier: pokedex
+      UserPoolId: !Ref CognitoUserPool
+      Scopes:
+        - ScopeName: read
+          ScopeDescription: Read users and the Pokemon catalog
+        - ScopeName: write
+          ScopeDescription: Create purchases
 
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
+    DependsOn: PokedexResourceServer
     Properties:
-      ClientName: pokedex-client
+      ClientName: !Sub '${AWS::StackName}-machine-client'
       GenerateSecret: true
       UserPoolId: !Ref CognitoUserPool
-      ExplicitAuthFlows:
-        - ALLOW_REFRESH_TOKEN_AUTH
-        - ALLOW_USER_SRP_AUTH
-        - ALLOW_CUSTOM_AUTH
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - client_credentials
+      AllowedOAuthScopes:
+        - pokedex/read
+        - pokedex/write
+      EnableTokenRevocation: true
 
-  Pokedex_UserPoolId_Param:
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub 'pokedex-${AWS::AccountId}-${Env}'
+      UserPoolId: !Ref CognitoUserPool
+
+  UserPoolArnParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /pokedex/auth/userpool-id
-      Type: String
-      Value: !Ref CognitoUserPool
-
-  Pokedex_UserPoolClientId_Param:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /pokedex/auth/userpool-client-id
-      Type: SecureString
-      Value: !Ref CognitoUserPoolClient
-
-  Pokedex_UserPoolArn_Param:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /pokedex/auth/userpool-arn
+      Name: !Sub '/pokedex/${Env}/auth/user-pool-arn'
       Type: String
       Value: !GetAtt CognitoUserPool.Arn
+      Description: Cognito user pool ARN consumed by the referential stack.
+      Tags:
+        Application: pokedex
+        Environment: !Ref Env
+
+  ResourceServerIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/pokedex/${Env}/auth/resource-server-id'
+      Type: String
+      Value: pokedex
+      Description: OAuth resource server identifier.
+      Tags:
+        Application: pokedex
+        Environment: !Ref Env
 
 Outputs:
   UserPoolId:
-    Description: "Cognito UserPoolId"
     Value: !Ref CognitoUserPool
-    Export:
-      Name: !Sub "${AWS::StackName}-UserPoolId"
   UserPoolClientId:
-    Description: "Cognito UserPoolClientId"
     Value: !Ref CognitoUserPoolClient
-    Export:
-      Name: !Sub "${AWS::StackName}-UserPoolClientId"
   UserPoolArn:
-    Description: "Cognito UserPoolArn"
     Value: !GetAtt CognitoUserPool.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-UserPoolArn"
+  AuthDomain:
+    Value: !Sub 'https://pokedex-${AWS::AccountId}-${Env}.auth.${AWS::Region}.amazoncognito.com'

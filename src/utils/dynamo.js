@@ -1,57 +1,81 @@
+const {
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  TransactWriteCommand,
+} = require('@aws-sdk/lib-dynamodb');
 const { documentClient } = require('./aws');
 
 async function getItem(tableName, PK, SK) {
-  const params = {
+  const result = await documentClient.send(new GetCommand({
     TableName: tableName,
     Key: { PK, SK },
-    ConsistentRead: true
-  };
-  const res = await documentClient.get(params);
-  return res.Item;
+    ConsistentRead: true,
+  }));
+
+  return result.Item;
 }
 
-async function putItemConditional(tableName, item, conditionExpression, expressionAttributeValues) {
-  const params = {
+function putItem(tableName, item, options = {}) {
+  return documentClient.send(new PutCommand({
     TableName: tableName,
-    Item: item
-  };
+    Item: item,
+    ...options,
+  }));
+}
+
+function putItemConditional(tableName, item, conditionExpression, expressionAttributeValues) {
+  const options = {};
+
   if (conditionExpression) {
-    params.ConditionExpression = conditionExpression;
-    params.ExpressionAttributeValues = expressionAttributeValues;
+    options.ConditionExpression = conditionExpression;
   }
-  return documentClient.put(params);
+  if (expressionAttributeValues && Object.keys(expressionAttributeValues).length > 0) {
+    options.ExpressionAttributeValues = expressionAttributeValues;
+  }
+
+  return putItem(tableName, item, options);
 }
 
-async function queryByPK(tableName, PK, options = {}) {
-  const params = {
-    TableName: tableName,
-    KeyConditionExpression: 'PK = :pk',
-    ExpressionAttributeValues: { ':pk': PK },
-    ...options
-  };
-  return documentClient.query(params);
+async function queryAllByGSI(tableName, indexName, partitionKey, partitionValue, options = {}) {
+  const items = [];
+  let exclusiveStartKey;
+
+  do {
+    const result = await documentClient.send(new QueryCommand({
+      TableName: tableName,
+      IndexName: indexName,
+      KeyConditionExpression: `${partitionKey} = :partitionValue`,
+      ExpressionAttributeValues: { ':partitionValue': partitionValue },
+      ...options,
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+
+    items.push(...(result.Items || []));
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
 }
 
-async function queryByGSI(tableName, indexName, keyName, keyValue, options = {}) {
-  const params = {
-    TableName: tableName,
-    IndexName: indexName,
-    KeyConditionExpression: `${keyName} = :v`,
-    ExpressionAttributeValues: { ':v': keyValue },
-    ...options
-  };
-  return documentClient.query(params);
-}
+function transactWrite(tableName, operations) {
+  const TransactItems = operations.map((operation) => {
+    const [operationName] = Object.keys(operation);
+    return {
+      [operationName]: {
+        TableName: tableName,
+        ...operation[operationName],
+      },
+    };
+  });
 
-async function transactWrite(TransactItems) {
-  const params = { TransactItems };
-  return documentClient.transactWrite(params);
+  return documentClient.send(new TransactWriteCommand({ TransactItems }));
 }
 
 module.exports = {
   getItem,
+  putItem,
   putItemConditional,
-  queryByPK,
-  queryByGSI,
-  transactWrite
+  queryAllByGSI,
+  transactWrite,
 };

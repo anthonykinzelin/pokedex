@@ -1,68 +1,85 @@
-const { transactWrite } = require('../../utils/dynamo');
+const { randomUUID } = require('node:crypto');
+const { getItem, transactWrite } = require('../../utils/dynamo');
+const {
+  HttpError,
+  errorResponse,
+  jsonResponse,
+  parseJsonBody,
+} = require('../../utils/http');
 
-const TABLE = process.env.TABLE_NAME;
+const TABLE_NAME = process.env.TABLE_NAME;
 
 exports.handler = async (event) => {
   try {
-    const body = event.body ? JSON.parse(event.body) : {};
-    const { userId, pokemonId, price, purchaseId } = body;
-    if (!userId || !pokemonId || typeof price !== 'number') {
-      return { statusCode: 400, body: JSON.stringify({ message: 'userId, pokemonId, price required' }) };
+    const userId = event.pathParameters?.userId?.trim();
+    if (!userId) {
+      throw new HttpError(400, 'The userId path parameter is required.');
     }
-    const txId = purchaseId || `tx-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
 
-    const userPK = `USER#${userId}`;
-    const userSK = `META#${userId}`;
+    const { pokemonId } = parseJsonBody(event);
+    if (typeof pokemonId !== 'string' || !pokemonId.trim()) {
+      throw new HttpError(400, 'pokemonId must be a non-empty string.');
+    }
 
-    const ownershipPK = userPK;
-    const ownershipSK = `POKEMON#${pokemonId}`;
+    const normalizedPokemonId = pokemonId.trim();
+    const [user, pokemon] = await Promise.all([
+      getItem(TABLE_NAME, `USER#${userId}`, 'PROFILE'),
+      getItem(TABLE_NAME, `POKEMON#${normalizedPokemonId}`, 'DETAIL'),
+    ]);
 
-    const purchasePK = `PURCHASE#${txId}`;
-    const purchaseSK = `META#${txId}`;
+    if (!user) {
+      throw new HttpError(404, `User ${userId} was not found.`);
+    }
+    if (!pokemon) {
+      throw new HttpError(404, `Pokemon ${normalizedPokemonId} was not found.`);
+    }
 
-    const TransactItems = [
+    const price = Number(pokemon.price || 0);
+    if (!Number.isFinite(user.balance) || user.balance < price) {
+      throw new HttpError(409, 'The user does not have enough balance.');
+    }
+
+    const purchaseId = randomUUID();
+    const createdAt = new Date().toISOString();
+
+    await transactWrite(TABLE_NAME, [
       {
         Update: {
-          TableName: TABLE,
-          Key: { PK: userPK, SK: userSK },
+          Key: { PK: `USER#${userId}`, SK: 'PROFILE' },
           UpdateExpression: 'SET balance = balance - :price',
-          ConditionExpression: 'balance >= :price',
-          ExpressionAttributeValues: { ':price': price }
-        }
+          ConditionExpression: 'attribute_exists(PK) AND balance >= :price',
+          ExpressionAttributeValues: { ':price': price },
+        },
       },
       {
         Put: {
-          TableName: TABLE,
           Item: {
-            PK: ownershipPK,
-            SK: ownershipSK,
-            entity: 'OWNERSHIP',
-            acquiredAt: new Date().toISOString()
-          },
-          ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)'
-        }
-      },
-      {
-        Put: {
-          TableName: TABLE,
-          Item: {
-            PK: purchasePK,
-            SK: purchaseSK,
+            PK: `USER#${userId}`,
+            SK: `PURCHASE#${createdAt}#${purchaseId}`,
             entity: 'PURCHASE',
+            purchaseId,
             userId,
-            pokemonId,
+            pokemonId: normalizedPokemonId,
+            pokemonName: pokemon.name,
             amount: price,
-            createdAt: new Date().toISOString()
+            createdAt,
           },
-          ConditionExpression: 'attribute_not_exists(PK)'
-        }
-      }
-    ];
+          ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)',
+        },
+      },
+    ]);
 
-    await transactWrite(TransactItems);
-    return { statusCode: 200, body: JSON.stringify({ purchaseId: txId }) };
-  } catch (err) {
-    const code = (err.name === 'TransactionCanceledException') ? 409 : 500;
-    return { statusCode: code, body: JSON.stringify({ message: err.message }) };
+    return jsonResponse(201, {
+      purchaseId,
+      userId,
+      pokemonId: normalizedPokemonId,
+      amount: price,
+      createdAt,
+    });
+  } catch (error) {
+    if (error?.name === 'TransactionCanceledException') {
+      return errorResponse(new HttpError(409, 'The purchase could not be completed.'));
+    }
+    return errorResponse(error);
   }
 };

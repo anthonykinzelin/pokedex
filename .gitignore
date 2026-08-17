@@ -63,6 +63,7 @@ typings/
 
 # Optional npm cache directory
 .npm
+.npm-cache/
 
 # Optional eslint cache
 .eslintcache
@@ -158,3 +159,6 @@ dist
 # stacks outputs
 *.outputs
 report.xml
+
+# Contains a generated Cognito client secret. Created by `make postman-env`.
+postman/pokedex.generated.postman_environment.json

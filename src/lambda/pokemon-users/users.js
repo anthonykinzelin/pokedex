@@ -1,39 +1,73 @@
-const { getItem, putItemConditional, queryByPK } = require('../../utils/dynamo');
+const { putItemConditional, queryAllByGSI } = require('../../utils/dynamo');
+const {
+  HttpError,
+  errorResponse,
+  jsonResponse,
+  parseJsonBody,
+} = require('../../utils/http');
 
-const TABLE = process.env.TABLE_NAME;
+const TABLE_NAME = process.env.TABLE_NAME;
 
 exports.handler = async (event) => {
   try {
     if (event.httpMethod === 'GET') {
-      const qs = event.queryStringParameters || {};
-      if (!qs.id) return { statusCode: 400, body: JSON.stringify({ message: 'id required' }) };
-      const pk = `USER#${qs.id}`;
-      const sk = `META#${qs.id}`;
-      const item = await getItem(TABLE, pk, sk);
-      return { statusCode: 200, body: JSON.stringify(item || {}) };
-    }
+      const items = await queryAllByGSI(
+        TABLE_NAME,
+        'GSI1',
+        'GSI1PK',
+        'ENTITY#USER',
+      );
 
-    if (event.httpMethod === 'POST') {
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { userId, username, balance = 0 } = body;
-      if (!userId || !username) return { statusCode: 400, body: JSON.stringify({ message: 'userId and username required' }) };
-
-      const item = {
-        PK: `USER#${userId}`,
-        SK: `META#${userId}`,
-        entity: 'USER',
+      const users = items.map(({ userId, username, balance, createdAt }) => ({
         userId,
         username,
         balance,
-        createdAt: new Date().toISOString()
-      };
+        createdAt,
+      }));
 
-      await putItemConditional(TABLE, item, 'attribute_not_exists(PK)', null);
-      return { statusCode: 201, body: JSON.stringify({ userId }) };
+      return jsonResponse(200, users);
     }
 
-    return { statusCode: 405, body: JSON.stringify({ message: 'Method not allowed' }) };
-  } catch (err) {
-    return { statusCode: 500, body: JSON.stringify({ message: err.message }) };
+    if (event.httpMethod === 'POST') {
+      const { userId, username, balance = 0 } = parseJsonBody(event);
+      if (typeof userId !== 'string' || !userId.trim()) {
+        throw new HttpError(400, 'userId must be a non-empty string.');
+      }
+      if (typeof username !== 'string' || !username.trim()) {
+        throw new HttpError(400, 'username must be a non-empty string.');
+      }
+      if (!Number.isFinite(balance) || balance < 0) {
+        throw new HttpError(400, 'balance must be a positive number or zero.');
+      }
+
+      const normalizedUserId = userId.trim();
+      const createdAt = new Date().toISOString();
+      await putItemConditional(
+        TABLE_NAME,
+        {
+          PK: `USER#${normalizedUserId}`,
+          SK: 'PROFILE',
+          GSI1PK: 'ENTITY#USER',
+          GSI1SK: `USER#${normalizedUserId}`,
+          entity: 'USER',
+          userId: normalizedUserId,
+          username: username.trim(),
+          balance,
+          createdAt,
+        },
+        'attribute_not_exists(PK) AND attribute_not_exists(SK)',
+      );
+
+      return jsonResponse(201, {
+        userId: normalizedUserId,
+        username: username.trim(),
+        balance,
+        createdAt,
+      });
+    }
+
+    return jsonResponse(405, { message: 'Method not allowed.' });
+  } catch (error) {
+    return errorResponse(error);
   }
 };

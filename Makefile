@@ -1,39 +1,98 @@
-S3_BUCKET := your-s3-bucket-name
-AUTH_STACK := pokedex-auth
-APP_STACK := pokedex-app
-PROFILE := default
-REGION := eu-west-1
+ENV ?= dev
+REGION ?= eu-west-1
+PROFILE ?= default
+AUTH_STACK ?= pokedex-auth-$(ENV)
+APP_STACK ?= pokedex-app-$(ENV)
+LOCAL_PORT ?= 3000
+TEST_PORT ?= 3001
+LOCAL_NETWORK ?= pokedex-local
 
-.PHONY: build package deploy-auth deploy-app local create-bucket clean-stack
+export npm_config_cache := $(CURDIR)/.npm-cache
 
-create-bucket:
-    aws s3 mb s3://$(S3_BUCKET) --region $(REGION)
+AWS := aws --region $(REGION) --profile $(PROFILE)
+SAM_DEPLOY := sam deploy --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset --region $(REGION) --profile $(PROFILE)
 
-build:
-    sam build --use-container
+.DEFAULT_GOAL := help
+.NOTPARALLEL:
 
-package: build
-    sam package --s3-bucket $(S3_BUCKET) --output-template-file packaged.yaml --region $(REGION) --profile $(PROFILE)
+.PHONY: help install validate build local-prepare local local-seed local-reset local-stop test-local deploy deploy-auth deploy-app seed-remote postman-env clean-stack clean-app clean-auth
+
+help:
+	@echo "Pokedex Lot 2"
+	@echo "  make test-local    Run a complete local integration test"
+	@echo "  make local         Start DynamoDB Local and the API on port $(LOCAL_PORT)"
+	@echo "  make local-seed    Start/seed only the local DynamoDB table"
+	@echo "  make local-reset   Clear and recreate the local DynamoDB table"
+	@echo "  make local-stop    Stop DynamoDB Local"
+	@echo "  make validate      Validate both SAM templates"
+	@echo "  make build         Build the referential Lambdas"
+	@echo "  make deploy        Deploy both stacks, seed data, generate Postman env"
+	@echo "  make deploy-auth   Deploy only the authentication stack"
+	@echo "  make deploy-app    Deploy only the referential stack"
+	@echo "  make clean-stack   Delete both stacks"
+
+install:
+	npm --prefix src ci
+
+validate:
+	sam validate --lint --template-file template-auth.yaml
+	sam validate --lint --template-file template-pokedex.yaml
+
+build: install validate
+	sam build --template-file template-pokedex.yaml --build-dir .aws-sam/app
+
+local-seed:
+	docker compose up -d dynamodb-local
+	AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_DEFAULT_REGION=$(REGION) \
+		./scripts/prepare-local-db.sh pokedex-local-data
+
+local-reset:
+	docker compose down
+	$(MAKE) local-seed
+
+local-prepare: build local-seed
+
+local: local-prepare
+	sam local start-api --template-file .aws-sam/app/template.yaml --env-vars env.json \
+		--docker-network $(LOCAL_NETWORK) --port $(LOCAL_PORT)
+
+test-local: local-prepare
+	LOCAL_PORT=$(TEST_PORT) LOCAL_NETWORK=$(LOCAL_NETWORK) ./scripts/test-local.sh
+
+local-stop:
+	docker compose down
+
+deploy:
+	$(MAKE) deploy-auth
+	$(MAKE) deploy-app
+	$(MAKE) seed-remote
+	$(MAKE) postman-env
 
 deploy-auth:
-    sam build --template-file template-auth.yaml
-    sam package --template-file .aws-sam/build/template-auth.yaml --output-template-file packaged-auth.yaml --s3-bucket $(S3_BUCKET) --region $(REGION) --profile $(PROFILE)
-    sam deploy --template-file packaged-auth.yaml --stack-name $(AUTH_STACK) --capabilities CAPABILITY_IAM --region $(REGION) --profile $(PROFILE)
+	sam build --template-file template-auth.yaml --build-dir .aws-sam/auth
+	$(SAM_DEPLOY) --template-file .aws-sam/auth/template.yaml --stack-name $(AUTH_STACK) \
+		--parameter-overrides Env=$(ENV)
 
-deploy-app: deploy-auth
-    @echo "Reading CFN outputs from auth stack..."
-    $(eval UPID=$(shell aws cloudformation describe-stacks --stack-name $(AUTH_STACK) --region $(REGION) --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text))
-    $(eval UPCID=$(shell aws cloudformation describe-stacks --stack-name $(AUTH_STACK) --region $(REGION) --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" --output text))
-    $(eval UPARN=$(shell aws cloudformation describe-stacks --stack-name $(AUTH_STACK) --region $(REGION) --query "Stacks[0].Outputs[?OutputKey=='UserPoolArn'].OutputValue" --output text))
-    sam build --template-file template-pokedex.yaml
-    sam package --template-file .aws-sam/build/template-pokedex.yaml --output-template-file packaged.yaml --s3-bucket $(S3_BUCKET) --region $(REGION) --profile $(PROFILE)
-    sam deploy --template-file packaged.yaml --stack-name $(APP_STACK) --parameter-overrides UserPoolId=$(UPID) UserPoolClientId=$(UPCID) UserPoolArn=$(UPARN) --capabilities CAPABILITY_IAM --region $(REGION) --profile $(PROFILE)
+deploy-app: build
+	$(SAM_DEPLOY) --template-file .aws-sam/app/template.yaml --stack-name $(APP_STACK) \
+		--parameter-overrides Env=$(ENV)
 
-local:
-    sam local start-api --env-vars env.json
+seed-remote:
+	@TABLE_NAME=$$($(AWS) cloudformation describe-stacks --stack-name $(APP_STACK) \
+		--query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue" --output text); \
+	if [ -z "$$TABLE_NAME" ]; then echo "TableName output not found"; exit 1; fi; \
+	TABLE_NAME="$$TABLE_NAME" AWS_REGION=$(REGION) AWS_PROFILE=$(PROFILE) node scripts/seed.js
+
+postman-env:
+	AWS_REGION=$(REGION) AWS_PROFILE=$(PROFILE) AUTH_STACK=$(AUTH_STACK) APP_STACK=$(APP_STACK) ENV=$(ENV) \
+		node scripts/create-postman-environment.js
+
+clean-app:
+	sam delete --stack-name $(APP_STACK) --region $(REGION) --profile $(PROFILE) --no-prompts
+
+clean-auth:
+	sam delete --stack-name $(AUTH_STACK) --region $(REGION) --profile $(PROFILE) --no-prompts
 
 clean-stack:
-    @echo "Deleting app stack: $(APP_STACK)"
-    sam delete --stack-name $(APP_STACK) --region $(REGION) --no-prompts || true
-    @echo "Deleting auth stack: $(AUTH_STACK)"
-    sam delete --stack-name $(AUTH_STACK) --region $(REGION) --no-prompts || true
+	-$(MAKE) clean-app
+	-$(MAKE) clean-auth
