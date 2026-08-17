@@ -1,0 +1,9 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "pokedex-app"
+s3_bucket = "your-s3-bucket-name"
+s3_prefix = "pokedex"
+region = "eu-west-1"
+capabilities = "CAPABILITY_IAM"
+no_fail_on_empty_changeset = true

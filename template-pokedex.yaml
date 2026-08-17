@@ -1,0 +1,129 @@
+Transform: AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs18.x
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+
+Resources:
+  PokedexTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-PokedexTable"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  PokemonCatalogFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-pokemon-catalog"
+      CodeUri: src/lambda/pokemon-catalog/
+      Handler: catalog.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref PokedexTable
+          USER_POOL_ID: !Sub "{{resolve:ssm:/pokedex/auth/userpool-id:1}}"
+          USER_POOL_CLIENT_ID: !Sub "{{resolve:ssm-secure:/pokedex/auth/userpool-client-id:1}}"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PokedexTable
+
+  PokemonPurchaseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-pokemon-purchase"
+      CodeUri: src/lambda/pokemon-purchase/
+      Handler: purchase.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref PokedexTable
+          USER_POOL_ID: !Sub "{{resolve:ssm:/pokedex/auth/userpool-id:1}}"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PokedexTable
+
+  PokemonUsersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-pokemon-users"
+      CodeUri: src/lambda/pokemon-users/
+      Handler: users.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref PokedexTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PokedexTable
+
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Env
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Sub "{{resolve:ssm:/pokedex/auth/userpool-arn:1}}"
+            Identity:
+              Header: Authorization
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title: pokedex-api
+        paths:
+          /pokemons:
+            get:
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PokemonCatalogFunction.Arn}/invocations"
+                httpMethod: POST
+                type: aws_proxy
+              security:
+                - CognitoAuthorizer: []
+          /purchase:
+            post:
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PokemonPurchaseFunction.Arn}/invocations"
+                httpMethod: POST
+                type: aws_proxy
+              security:
+                - CognitoAuthorizer: []
+          /users:
+            get:
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PokemonUsersFunction.Arn}/invocations"
+                httpMethod: GET
+                type: aws_proxy
+              security:
+                - CognitoAuthorizer: []
+
+Outputs:
+  TableName:
+    Value: !Ref PokedexTable
+    Export:
+      Name: !Sub "${AWS::StackName}-PokedexTableName"

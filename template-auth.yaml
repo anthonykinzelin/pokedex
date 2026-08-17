@@ -1,0 +1,66 @@
+Transform: AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Timeout: 10
+
+Resources:
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: pokedex-user-pool
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: pokedex-client
+      GenerateSecret: true
+      UserPoolId: !Ref CognitoUserPool
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_CUSTOM_AUTH
+
+  Pokedex_UserPoolId_Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /pokedex/auth/userpool-id
+      Type: String
+      Value: !Ref CognitoUserPool
+
+  Pokedex_UserPoolClientId_Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /pokedex/auth/userpool-client-id
+      Type: SecureString
+      Value: !Ref CognitoUserPoolClient
+
+  Pokedex_UserPoolArn_Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /pokedex/auth/userpool-arn
+      Type: String
+      Value: !GetAtt CognitoUserPool.Arn
+
+Outputs:
+  UserPoolId:
+    Description: "Cognito UserPoolId"
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolId"
+  UserPoolClientId:
+    Description: "Cognito UserPoolClientId"
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolClientId"
+  UserPoolArn:
+    Description: "Cognito UserPoolArn"
+    Value: !GetAtt CognitoUserPool.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolArn"
