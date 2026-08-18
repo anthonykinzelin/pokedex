@@ -1,108 +1,65 @@
 # Pokedex — Lot 2
 
-The project deploys two AWS SAM stacks:
+AWS SAM project with two stacks:
 
 - `pokedex-auth-dev`: Cognito authentication;
-- `pokedex-app-dev`: API Gateway, three Lambdas and one DynamoDB table.
-
-Default configuration:
-
-```text
-AWS profile: germen-dev-anthonyk
-Region:      eu-west-1
-Environment: dev
-```
+- `pokedex-app-dev`: API Gateway, Lambda and DynamoDB.
 
 ## Requirements
 
 - Node.js 24 and npm
-- Docker
-- AWS CLI and SAM CLI
-- the `germen-dev-anthonyk` AWS profile
+- AWS CLI
+- AWS SAM CLI
+- AWS profile `germen-dev-anthonyk`
 
-## 1. Test locally
+The default region is `eu-west-1` and the default environment is `dev`.
 
-Run the automated test:
+## Deploy
 
-```bash
-make test-local
-```
-
-For a manual Postman test, start the API:
-
-```bash
-make local
-```
-
-Import and run these files in their numbered order:
-
-- `postman/pokedex.postman_collection.json`
-- `postman/pokedex.postman_environment.json`
-
-Stop the local services with:
-
-```bash
-make local-stop
-```
-
-## 2. Check AWS access
-
-If the AWS SSO session has expired:
+Log in again if the AWS SSO session has expired:
 
 ```bash
 aws sso login --profile germen-dev-anthonyk
 ```
 
-Check the account that will receive the resources:
+Check the AWS account:
 
 ```bash
 make aws-check
 ```
 
-## 3. Deploy everything
+Deploy the complete project:
 
 ```bash
 make deploy
 ```
 
-This command deploys Cognito first, then the API, Lambdas and DynamoDB. It also generates the deployed Postman collection and environment, then prints the stack outputs.
+The authentication stack is deployed first. It stores the Cognito user-pool ARN in:
 
-## 4. Test AWS with Postman
+```text
+/pokedex/dev/auth/user-pool-arn
+```
 
-Import:
+The application stack reads this SSM parameter when it configures the API Gateway authorizer. SAM creates or reuses its managed S3 bucket to upload the Lambda packages.
+
+## Test with Postman
+
+The deployment generates:
 
 - `postman/pokedex.generated.postman_collection.json`
 - `postman/pokedex.generated.postman_environment.json`
 
-Select **Pokedex dev** and run the generated collection in order. It contains every available operation:
+Import both files, select **Pokedex dev**, and run the requests in order.
 
-1. get a Cognito M2M token;
-2. create a user;
-3. add a Pokemon;
-4. list users;
-5. list Pokemon;
-6. create a purchase;
-7. list users again and verify the purchased Pokemon is owned by the user.
+The collection gets a Cognito token, creates a user and a Pokemon, lists the data, creates a purchase, and checks that the Pokemon belongs to the user.
 
-The generated environment contains the Cognito client secret. Both generated files are ignored by Git and can be recreated by running `make deploy` again.
+The generated environment contains the Cognito client secret and is ignored by Git.
 
-## Useful commands
+## Other commands
 
 ```bash
-make deploy-auth  # deploy only Cognito
-make deploy-app   # deploy only the API, Lambdas and DynamoDB
-make outputs      # display deployed URLs and IDs
-make clean-stack  # delete both AWS stacks
+make deploy-auth  # deploy Cognito only
+make deploy-app   # deploy the API, Lambda and DynamoDB only
+make outputs      # show stack outputs
+make clean-stack  # delete both stacks
 ```
-
-API routes:
-
-```text
-POST /users
-GET  /users
-POST /pokemons
-GET  /pokemons
-POST /users/{userId}/purchases
-```
-
-`GET /users` returns each user with a `pokemons` array containing the Pokemon acquired through purchases.

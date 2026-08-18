@@ -18,8 +18,6 @@ Globals:
     Environment:
       Variables:
         TABLE_NAME: !Ref PokedexTable
-        # Overridden by env.json for SAM Local; empty means the normal AWS endpoint.
-        DYNAMODB_ENDPOINT: ''
 
 Resources:
   PokedexTable:

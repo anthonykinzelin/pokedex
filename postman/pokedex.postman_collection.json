@@ -1,19 +1,9 @@
 {
   "info": {
     "name": "Pokedex Lot 2 API",
-    "description": "Creates local test data, lists it, and purchases a Pokemon. With the deployed environment it first obtains a Cognito M2M token.",
+    "description": "Tests every deployed Pokedex API endpoint.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
-  "variable": [
-    { "key": "api_base_url", "value": "http://127.0.0.1:3000" },
-    { "key": "auth_domain", "value": "" },
-    { "key": "client_id", "value": "" },
-    { "key": "client_secret", "value": "" },
-    { "key": "scope", "value": "pokedex/read pokedex/write" },
-    { "key": "access_token", "value": "" },
-    { "key": "user_id", "value": "ash" },
-    { "key": "pokemon_id", "value": "pikachu" }
-  ],
   "item": [
     {
       "name": "1 - Get M2M token",
@@ -39,16 +29,6 @@
         "url": "{{auth_domain}}/oauth2/token"
       },
       "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "exec": [
-              "if (!pm.variables.get('auth_domain')) {",
-              "  pm.execution.skipRequest();",
-              "}"
-            ]
-          }
-        },
         {
           "listen": "test",
           "script": {
