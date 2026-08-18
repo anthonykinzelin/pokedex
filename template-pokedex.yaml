@@ -20,6 +20,22 @@ Globals:
         TABLE_NAME: !Ref PokedexTable
 
 Resources:
+  PurchaseEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub '${AWS::StackName}-events'
+
+  PurchaseEventBusNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/pokedex/${Env}/referential/event-bus-name'
+      Type: String
+      Value: !Ref PurchaseEventBus
+      Description: Event bus used by services that consume referential events.
+      Tags:
+        Application: pokedex
+        Environment: !Ref Env
+
   PokedexTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Delete
@@ -148,6 +164,9 @@ Resources:
       FunctionName: !Sub '${AWS::StackName}-purchase'
       CodeUri: src/
       Handler: lambda/pokemon-purchase/purchase.handler
+      Environment:
+        Variables:
+          EVENT_BUS_NAME: !Ref PurchaseEventBus
       Policies:
         - Statement:
             - Effect: Allow
@@ -157,6 +176,9 @@ Resources:
                 - dynamodb:UpdateItem
                 - dynamodb:TransactWriteItems
               Resource: !GetAtt PokedexTable.Arn
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !GetAtt PurchaseEventBus.Arn
       Events:
         CreatePurchase:
           Type: Api
@@ -176,3 +198,9 @@ Outputs:
   TableName:
     Description: Name of the single-table DynamoDB table.
     Value: !Ref PokedexTable
+  EventBusName:
+    Description: EventBridge bus used for referential events.
+    Value: !Ref PurchaseEventBus
+  EventBusArn:
+    Description: ARN of the EventBridge bus.
+    Value: !GetAtt PurchaseEventBus.Arn

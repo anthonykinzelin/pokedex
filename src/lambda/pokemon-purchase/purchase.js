@@ -1,5 +1,6 @@
 const { randomUUID } = require('node:crypto');
 const { getItem, transactWrite } = require('../../utils/dynamo');
+const { publishEvent } = require('../../utils/events');
 const {
   HttpError,
   errorResponse,
@@ -8,6 +9,7 @@ const {
 } = require('../../utils/http');
 
 const TABLE_NAME = process.env.TABLE_NAME;
+const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME;
 
 exports.handler = async (event) => {
   try {
@@ -83,6 +85,26 @@ exports.handler = async (event) => {
         },
       },
     ]);
+
+    try {
+      await publishEvent(
+        EVENT_BUS_NAME,
+        'fr.pokemon.referential',
+        'purchase.completed',
+        {
+          eventVersion: '1.0',
+          purchaseId,
+          userId,
+          pokemonId: normalizedPokemonId,
+          occurredAt: createdAt,
+        },
+      );
+    } catch (eventError) {
+      console.error('The purchase was saved but its event could not be published.', {
+        purchaseId,
+        error: eventError.message,
+      });
+    }
 
     return jsonResponse(201, {
       purchaseId,

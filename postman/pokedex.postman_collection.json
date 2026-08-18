@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "Pokedex Lot 2 API",
-    "description": "Tests every deployed Pokedex API endpoint.",
+    "name": "Pokedex Lot 3 API",
+    "description": "Tests the referential and Levels API endpoints.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -219,6 +219,49 @@
               "  pm.expect(user.pokemons).to.be.an('array');",
               "  pm.expect(user.pokemons.some(pokemon => pokemon.pokemonId === pm.variables.get('pokemon_id'))).to.be.true;",
               "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 - Get user level",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+        ],
+        "url": "{{levels_api_base_url}}/users/{{user_id}}/level"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "setTimeout(() => {}, 1000);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const attempts = Number(pm.collectionVariables.get('level_poll_attempts') || 0);",
+              "const response = pm.response.code === 200 ? pm.response.json() : {};",
+              "const levelIsReady = response.points >= 100 && response.level >= 1;",
+              "if (!levelIsReady && attempts < 5) {",
+              "  pm.collectionVariables.set('level_poll_attempts', attempts + 1);",
+              "  pm.execution.setNextRequest(pm.info.requestName);",
+              "} else {",
+              "  pm.collectionVariables.unset('level_poll_attempts');",
+              "  pm.test('level reflects the purchase', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(response.userId).to.eql(pm.variables.get('user_id'));",
+              "    pm.expect(response.points).to.be.at.least(100);",
+              "    pm.expect(response.level).to.be.at.least(1);",
+              "    pm.expect(response.updatedAt).to.be.a('string').and.not.empty;",
+              "  });",
+              "}"
             ]
           }
         }

@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Pokedex Levels service (EventBridge, SQS, Lambda, API and DynamoDB).
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[a-z0-9-]+$'
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Architectures:
+      - arm64
+    Timeout: 10
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref LevelsTable
+
+Resources:
+  LevelsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${AWS::StackName}-data'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: pokedex
+        - Key: Environment
+          Value: !Ref Env
+
+  LevelsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Application
+          Value: pokedex
+        - Key: Environment
+          Value: !Ref Env
+
+  LevelsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-purchases'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt LevelsDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Application
+          Value: pokedex
+        - Key: Environment
+          Value: !Ref Env
+
+  PurchaseCompletedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-purchase-completed'
+      Description: Sends completed purchases to the Levels queue.
+      EventBusName: !Sub '{{resolve:ssm:/pokedex/${Env}/referential/event-bus-name}}'
+      EventPattern:
+        source:
+          - fr.pokemon.referential
+        detail-type:
+          - purchase.completed
+      State: ENABLED
+      Targets:
+        - Id: LevelsQueue
+          Arn: !GetAtt LevelsQueue.Arn
+          DeadLetterConfig:
+            Arn: !GetAtt LevelsDeadLetterQueue.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 3600
+            MaximumRetryAttempts: 10
+
+  LevelsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref LevelsQueue
+        - !Ref LevelsDeadLetterQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToSendMessages
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt LevelsQueue.Arn
+              - !GetAtt LevelsDeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt PurchaseCompletedRule.Arn
+
+  LevelsConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-consumer'
+      CodeUri: src/
+      Handler: lambda/pokemon-levels/progression.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:TransactWriteItems
+              Resource: !GetAtt LevelsTable.Arn
+      Events:
+        PurchaseEvents:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt LevelsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  LevelsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      StageName: !Ref Env
+      EndpointConfiguration: REGIONAL
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Sub '{{resolve:ssm:/pokedex/${Env}/auth/user-pool-arn}}'
+
+  GetLevelFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-get-level'
+      CodeUri: src/
+      Handler: lambda/pokemon-levels/level.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref LevelsTable
+      Events:
+        GetLevel:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LevelsApi
+            Path: /users/{userId}/level
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes:
+                - pokedex/read
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the Levels API.
+    Value: !Sub 'https://${LevelsApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Env}'
+  TableName:
+    Description: Name of the Levels DynamoDB table.
+    Value: !Ref LevelsTable
+  QueueUrl:
+    Description: URL of the purchase event queue.
+    Value: !Ref LevelsQueue
+  DeadLetterQueueUrl:
+    Description: URL of the dead-letter queue.
+    Value: !Ref LevelsDeadLetterQueue
