@@ -83,6 +83,7 @@ assert_request 409 POST /pokemons "{\"pokemonId\":\"$pokemon_id\",\"name\":\"Dup
 assert_request 200 GET /users '' "type == \"array\" and any(.[]; .userId == \"$user_id\")"
 assert_request 200 GET /pokemons '' "type == \"array\" and any(.[]; .pokemonId == \"$pokemon_id\")"
 assert_request 201 POST "/users/$user_id/purchases" "{\"pokemonId\":\"$pokemon_id\"}" '.purchaseId | type == "string"'
+assert_request 200 GET /users '' "any(.[]; .userId == \"$user_id\" and any(.pokemons[]; .pokemonId == \"$pokemon_id\"))"
 assert_request 400 POST "/users/$user_id/purchases" '{}' '.message | type == "string"'
 assert_request 404 POST /users/missing/purchases '{"pokemonId":"pikachu"}' '.message | type == "string"'
 assert_request 404 POST "/users/$user_id/purchases" '{"pokemonId":"missing"}' '.message | type == "string"'

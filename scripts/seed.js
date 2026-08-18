@@ -16,6 +16,7 @@ const items = [
     userId: 'ash',
     username: 'Ash Ketchum',
     balance: 10000,
+    pokemons: [],
     createdAt,
   },
   {
@@ -27,6 +28,7 @@ const items = [
     userId: 'misty',
     username: 'Misty',
     balance: 10000,
+    pokemons: [],
     createdAt,
   },
   {

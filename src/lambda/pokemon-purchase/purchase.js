@@ -41,14 +41,29 @@ exports.handler = async (event) => {
 
     const purchaseId = randomUUID();
     const createdAt = new Date().toISOString();
+    const ownedPokemon = {
+      pokemonId: normalizedPokemonId,
+      name: pokemon.name,
+      type: pokemon.type,
+      price,
+      purchaseId,
+      acquiredAt: createdAt,
+    };
 
     await transactWrite(TABLE_NAME, [
       {
         Update: {
           Key: { PK: `USER#${userId}`, SK: 'PROFILE' },
-          UpdateExpression: 'SET balance = balance - :price',
+          UpdateExpression: [
+            'SET balance = balance - :price',
+            'pokemons = list_append(if_not_exists(pokemons, :emptyList), :pokemon)',
+          ].join(', '),
           ConditionExpression: 'attribute_exists(PK) AND balance >= :price',
-          ExpressionAttributeValues: { ':price': price },
+          ExpressionAttributeValues: {
+            ':price': price,
+            ':emptyList': [],
+            ':pokemon': [ownedPokemon],
+          },
         },
       },
       {

@@ -3,10 +3,29 @@ const { readFileSync, writeFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 
 const region = process.env.AWS_REGION || 'eu-west-1';
-const profile = process.env.AWS_PROFILE || 'default';
+const profile = process.env.AWS_PROFILE || 'germen-dev-anthonyk';
 const authStack = process.env.AUTH_STACK || 'pokedex-auth-dev';
 const appStack = process.env.APP_STACK || 'pokedex-app-dev';
 const environmentName = process.env.ENV || 'dev';
+const collectionOnly = process.argv.includes('--collection-only');
+
+const collectionTemplatePath = resolve('postman/pokedex.postman_collection.json');
+const collectionOutputPath = resolve('postman/pokedex.generated.postman_collection.json');
+const collection = JSON.parse(readFileSync(collectionTemplatePath, 'utf8'));
+
+collection.info.name = `Pokedex ${environmentName} - Deployed API`;
+collection.info.description =
+  `Generated for ${appStack}. Select the "Pokedex ${environmentName}" environment and run the requests in order.`;
+
+writeFileSync(
+  collectionOutputPath,
+  `${JSON.stringify(collection, null, 2)}\n`,
+);
+console.log(`Generated ${collectionOutputPath}`);
+
+if (collectionOnly) {
+  process.exit(0);
+}
 
 function aws(...args) {
   const result = spawnSync(
@@ -45,9 +64,9 @@ const clientSecret = aws(
   '--output', 'text',
 );
 
-const templatePath = resolve('postman/pokedex.postman_environment.json');
-const outputPath = resolve('postman/pokedex.generated.postman_environment.json');
-const environment = JSON.parse(readFileSync(templatePath, 'utf8'));
+const environmentTemplatePath = resolve('postman/pokedex.postman_environment.json');
+const environmentOutputPath = resolve('postman/pokedex.generated.postman_environment.json');
+const environment = JSON.parse(readFileSync(environmentTemplatePath, 'utf8'));
 const values = {
   api_base_url: app.ApiUrl,
   auth_domain: auth.AuthDomain,
@@ -68,6 +87,11 @@ for (const variable of environment.values) {
   }
 }
 
-writeFileSync(outputPath, `${JSON.stringify(environment, null, 2)}\n`, { mode: 0o600 });
-console.log(`Generated ${outputPath}`);
-console.log('This ignored file contains the Cognito client secret; do not commit it.');
+writeFileSync(
+  environmentOutputPath,
+  `${JSON.stringify(environment, null, 2)}\n`,
+  { mode: 0o600 },
+);
+
+console.log(`Generated ${environmentOutputPath}`);
+console.log('The environment contains the Cognito client secret; do not commit it.');

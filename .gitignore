@@ -160,5 +160,6 @@ dist
 *.outputs
 report.xml
 
-# Contains a generated Cognito client secret. Created by `make postman-env`.
+# Generated after AWS deployment. The environment contains a Cognito secret.
 postman/pokedex.generated.postman_environment.json
+postman/pokedex.generated.postman_collection.json

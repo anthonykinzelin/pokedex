@@ -216,6 +216,33 @@
           }
         }
       ]
+    },
+    {
+      "name": "7 - List users with owned Pokemon",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+        ],
+        "url": "{{api_base_url}}/users"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('purchased Pokemon belongs to the user', function () {",
+              "  pm.response.to.have.status(200);",
+              "  const users = pm.response.json();",
+              "  const user = users.find(item => item.userId === pm.variables.get('user_id'));",
+              "  pm.expect(user).to.be.an('object');",
+              "  pm.expect(user.pokemons).to.be.an('array');",
+              "  pm.expect(user.pokemons.some(pokemon => pokemon.pokemonId === pm.variables.get('pokemon_id'))).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

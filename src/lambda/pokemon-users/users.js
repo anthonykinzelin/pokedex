@@ -18,10 +18,11 @@ exports.handler = async (event) => {
         'ENTITY#USER',
       );
 
-      const users = items.map(({ userId, username, balance, createdAt }) => ({
+      const users = items.map(({ userId, username, balance, pokemons, createdAt }) => ({
         userId,
         username,
         balance,
+        pokemons: Array.isArray(pokemons) ? pokemons : [],
         createdAt,
       }));
 
@@ -53,6 +54,7 @@ exports.handler = async (event) => {
           userId: normalizedUserId,
           username: username.trim(),
           balance,
+          pokemons: [],
           createdAt,
         },
         'attribute_not_exists(PK) AND attribute_not_exists(SK)',
@@ -62,6 +64,7 @@ exports.handler = async (event) => {
         userId: normalizedUserId,
         username: username.trim(),
         balance,
+        pokemons: [],
         createdAt,
       });
     }
