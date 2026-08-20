@@ -9,8 +9,6 @@ Parameters:
     AllowedPattern: '^[a-z0-9-]+$'
 
 Resources:
-  # The utils used to be copied into every function package. They now live here
-  # once, which is what lets each function build from its own directory.
   PokedexUtilsLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
@@ -33,7 +31,6 @@ Resources:
       BuildMethod: makefile
       BuildArchitecture: arm64
 
-  # Same handoff convention as /pokedex/<env>/auth/* and /pokedex/<env>/referential/*.
   UtilsLayerArnParameter:
     Type: AWS::SSM::Parameter
     Properties:

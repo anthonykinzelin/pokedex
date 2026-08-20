@@ -106,14 +106,9 @@ Resources:
       Handler: users.handler
       Policies:
         - Statement:
-            # GET /users queries GSI1, which is a separate resource ARN.
             - Effect: Allow
               Action: dynamodb:Query
               Resource: !Sub '${PokedexTable.Arn}/index/GSI1'
-            # GetItem reads the name reservation when a creation conflicts.
-            # PutItem covers both writes of the TransactWriteItems call: a
-            # transaction is authorised through its underlying operations, so
-            # there is no dynamodb:TransactWriteItems IAM action to grant.
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
@@ -152,8 +147,6 @@ Resources:
             - Effect: Allow
               Action: dynamodb:Query
               Resource: !Sub '${PokedexTable.Arn}/index/GSI1'
-            # The pokemonId is a slug of the name, so a single conditional
-            # PutItem is all the uniqueness this route needs.
             - Effect: Allow
               Action: dynamodb:PutItem
               Resource: !GetAtt PokedexTable.Arn
