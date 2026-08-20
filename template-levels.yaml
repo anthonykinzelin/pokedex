@@ -7,6 +7,14 @@ Parameters:
     Type: String
     Default: dev
     AllowedPattern: '^[a-z0-9-]+$'
+  UtilsLayerArn:
+    Type: String
+    Description: >-
+      Versioned ARN of the shared pokedex-utils layer, read from
+      /pokedex/<Env>/shared/utils-layer-arn by the Makefile. No default on
+      purpose: a stale fake ARN reaching CloudFormation is far worse than a
+      missing-parameter error.
+    AllowedPattern: '^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:layer:[a-zA-Z0-9._-]+:\d+$'
 
 Globals:
   Function:
@@ -15,6 +23,8 @@ Globals:
       - arm64
     Timeout: 10
     MemorySize: 256
+    Layers:
+      - !Ref UtilsLayerArn
     Environment:
       Variables:
         TABLE_NAME: !Ref LevelsTable
@@ -121,8 +131,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-consumer'
-      CodeUri: src/
-      Handler: lambda/pokemon-levels/progression.handler
+      CodeUri: functions/levels-consumer/
+      Handler: progression.handler
       Policies:
         - Statement:
             - Effect: Allow
@@ -130,7 +140,6 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
-                - dynamodb:TransactWriteItems
               Resource: !GetAtt LevelsTable.Arn
       Events:
         PurchaseEvents:
@@ -157,8 +166,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-get-level'
-      CodeUri: src/
-      Handler: lambda/pokemon-levels/level.handler
+      CodeUri: functions/levels-api/
+      Handler: level.handler
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref LevelsTable

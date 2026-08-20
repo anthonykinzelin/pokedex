@@ -1,9 +1,35 @@
 {
   "info": {
     "name": "Pokedex Lot 3 API",
-    "description": "Tests the referential and Levels API endpoints.",
+    "description": "Tests the referential and Levels API endpoints. The server owns the identity of the resources it creates: the client sends a name and gets an id back.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "variable": [
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "user_id",
+      "value": ""
+    },
+    {
+      "key": "user_name",
+      "value": ""
+    },
+    {
+      "key": "user_name_variant",
+      "value": ""
+    },
+    {
+      "key": "pokemon_id",
+      "value": ""
+    },
+    {
+      "key": "pokemon_name",
+      "value": ""
+    }
+  ],
   "item": [
     {
       "name": "1 - Get M2M token",
@@ -11,19 +37,38 @@
         "auth": {
           "type": "basic",
           "basic": [
-            { "key": "username", "value": "{{client_id}}", "type": "string" },
-            { "key": "password", "value": "{{client_secret}}", "type": "string" }
+            {
+              "key": "username",
+              "value": "{{client_id}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{client_secret}}",
+              "type": "string"
+            }
           ]
         },
         "method": "POST",
         "header": [
-          { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
         ],
         "body": {
           "mode": "urlencoded",
           "urlencoded": [
-            { "key": "grant_type", "value": "client_credentials", "type": "text" },
-            { "key": "scope", "value": "{{scope}}", "type": "text" }
+            {
+              "key": "grant_type",
+              "value": "client_credentials",
+              "type": "text"
+            },
+            {
+              "key": "scope",
+              "value": "{{scope}}",
+              "type": "text"
+            }
           ]
         },
         "url": "{{auth_domain}}/oauth2/token"
@@ -39,7 +84,13 @@
               "  pm.expect(response.access_token).to.be.a('string').and.not.empty;",
               "  pm.collectionVariables.set('access_token', response.access_token);",
               "  if (pm.environment.name) pm.environment.set('access_token', response.access_token);",
-              "});"
+              "});",
+              "",
+              "// Names are the uniqueness key now, so each run needs its own. This runs",
+              "// once per run because request 1 always runs first.",
+              "const runId = pm.variables.replaceIn('{{$guid}}');",
+              "pm.collectionVariables.set('user_name', 'Postman Trainer ' + runId);",
+              "pm.collectionVariables.set('pokemon_name', 'Postmanchu ' + runId);"
             ]
           }
         }
@@ -50,28 +101,73 @@
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" },
-          { "key": "Content-Type", "value": "application/json" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
+        "url": "{{api_base_url}}/users",
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"userId\": \"{{user_id}}\",\n  \"username\": \"Postman Trainer\",\n  \"balance\": 100\n}"
-        },
-        "url": "{{api_base_url}}/users"
+          "raw": "{\n  \"name\": \"{{user_name}}\",\n  \"balance\": 100\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('the server generates the user id', function () {",
+              "  pm.response.to.have.status(201);",
+              "  const user = pm.response.json();",
+              "  // The id comes back from the server: the client never chooses it.",
+              "  pm.expect(user.userId).to.match(",
+              "    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,",
+              "  );",
+              "  pm.expect(user.name).to.eql(pm.collectionVariables.get('user_name'));",
+              "  pm.expect(user.balance).to.eql(100);",
+              "  pm.expect(user.pokemons).to.be.an('array').that.is.empty;",
+              "  pm.collectionVariables.set('user_id', user.userId);",
+              "  if (pm.environment.name) pm.environment.set('user_id', user.userId);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - Reject a duplicate user name",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_base_url}}/users",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"  {{user_name_variant}}  \"\n}"
+        }
       },
       "event": [
         {
           "listen": "prerequest",
           "script": {
             "exec": [
-              "const runId = pm.variables.replaceIn('{{$guid}}');",
-              "pm.collectionVariables.set('user_id', 'user-' + runId);",
-              "pm.collectionVariables.set('pokemon_id', 'pokemon-' + runId);",
-              "if (pm.environment.name) {",
-              "  pm.environment.set('run_id', runId);",
-              "  pm.environment.set('user_id', 'user-' + runId);",
-              "  pm.environment.set('pokemon_id', 'pokemon-' + runId);",
-              "}"
+              "// Upper cased and padded with spaces. The API must still see it as",
+              "// the same name, which is what the reservation item guarantees.",
+              "const name = pm.collectionVariables.get('user_name');",
+              "pm.collectionVariables.set('user_name_variant', name.toUpperCase());"
             ]
           }
         },
@@ -79,9 +175,11 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('user created', function () {",
-              "  pm.response.to.have.status(201);",
-              "  pm.expect(pm.response.json().userId).to.eql(pm.variables.get('user_id'));",
+              "pm.test('a duplicate name is rejected and names the existing user', function () {",
+              "  pm.response.to.have.status(409);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.message).to.be.a('string').and.not.empty;",
+              "  pm.expect(body.userId).to.eql(pm.collectionVariables.get('user_id'));",
               "});"
             ]
           }
@@ -89,27 +187,35 @@
       ]
     },
     {
-      "name": "3 - Add Pokemon",
+      "name": "4 - Reject a client supplied userId",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" },
-          { "key": "Content-Type", "value": "application/json" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
+        "url": "{{api_base_url}}/users",
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\",\n  \"name\": \"Postmanchu\",\n  \"type\": \"electric\",\n  \"price\": 25\n}"
-        },
-        "url": "{{api_base_url}}/pokemons"
+          "raw": "{\n  \"userId\": \"chosen-by-the-client\",\n  \"name\": \"Someone Else\"\n}"
+        }
       },
       "event": [
         {
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('Pokemon created', function () {",
-              "  pm.response.to.have.status(201);",
-              "  pm.expect(pm.response.json().pokemonId).to.eql(pm.variables.get('pokemon_id'));",
+              "pm.test('a client cannot choose the user id', function () {",
+              "  pm.response.to.have.status(400);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.field).to.eql('userId');",
+              "  pm.expect(body.message).to.include('userId');",
               "});"
             ]
           }
@@ -117,11 +223,54 @@
       ]
     },
     {
-      "name": "4 - List users",
+      "name": "5 - Create Pokemon",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_base_url}}/pokemons",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"{{pokemon_name}}\",\n  \"type\": \"electric\",\n  \"price\": 25\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('the server derives the pokemon id from the name', function () {",
+              "  pm.response.to.have.status(201);",
+              "  const pokemon = pm.response.json();",
+              "  pm.expect(pokemon.pokemonId).to.be.a('string').and.not.empty;",
+              "  // A slug, so it is lower case and has no spaces.",
+              "  pm.expect(pokemon.pokemonId).to.eql(pokemon.pokemonId.toLowerCase());",
+              "  pm.expect(pokemon.pokemonId).to.not.include(' ');",
+              "  pm.collectionVariables.set('pokemon_id', pokemon.pokemonId);",
+              "  if (pm.environment.name) pm.environment.set('pokemon_id', pokemon.pokemonId);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 - List users",
       "request": {
         "method": "GET",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
         ],
         "url": "{{api_base_url}}/users"
       },
@@ -130,11 +279,14 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('created user is listed', function () {",
+              "pm.test('the created user is listed, and no reservation item leaks', function () {",
               "  pm.response.to.have.status(200);",
               "  const users = pm.response.json();",
               "  pm.expect(users).to.be.an('array');",
-              "  pm.expect(users.some(user => user.userId === pm.variables.get('user_id'))).to.be.true;",
+              "  pm.expect(users.some(u => u.userId === pm.collectionVariables.get('user_id'))).to.be.true;",
+              "  // Reservation items carry no GSI1 keys, so a sparse index keeps them",
+              "  // out of this list. Every row here must be a real user profile.",
+              "  users.forEach(u => pm.expect(u.userId).to.be.a('string').and.not.empty);",
               "});"
             ]
           }
@@ -142,11 +294,14 @@
       ]
     },
     {
-      "name": "5 - List Pokemon",
+      "name": "7 - List Pokemon",
       "request": {
         "method": "GET",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
         ],
         "url": "{{api_base_url}}/pokemons"
       },
@@ -155,11 +310,11 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('created Pokemon is listed', function () {",
+              "pm.test('the created Pokemon is listed', function () {",
               "  pm.response.to.have.status(200);",
               "  const pokemons = pm.response.json();",
               "  pm.expect(pokemons).to.be.an('array');",
-              "  pm.expect(pokemons.some(pokemon => pokemon.pokemonId === pm.variables.get('pokemon_id'))).to.be.true;",
+              "  pm.expect(pokemons.some(p => p.pokemonId === pm.collectionVariables.get('pokemon_id'))).to.be.true;",
               "});"
             ]
           }
@@ -167,18 +322,24 @@
       ]
     },
     {
-      "name": "6 - Purchase Pokemon",
+      "name": "8 - Purchase Pokemon",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" },
-          { "key": "Content-Type", "value": "application/json" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
+        "url": "{{api_base_url}}/users/{{user_id}}/purchases",
         "body": {
           "mode": "raw",
           "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\"\n}"
-        },
-        "url": "{{api_base_url}}/users/{{user_id}}/purchases"
+        }
       },
       "event": [
         {
@@ -189,8 +350,8 @@
               "  pm.response.to.have.status(201);",
               "  const purchase = pm.response.json();",
               "  pm.expect(purchase).to.have.property('purchaseId');",
-              "  pm.expect(purchase.userId).to.eql(pm.variables.get('user_id'));",
-              "  pm.expect(purchase.pokemonId).to.eql(pm.variables.get('pokemon_id'));",
+              "  pm.expect(purchase.userId).to.eql(pm.collectionVariables.get('user_id'));",
+              "  pm.expect(purchase.pokemonId).to.eql(pm.collectionVariables.get('pokemon_id'));",
               "});"
             ]
           }
@@ -198,11 +359,14 @@
       ]
     },
     {
-      "name": "7 - List users with owned Pokemon",
+      "name": "9 - List users with owned Pokemon",
       "request": {
         "method": "GET",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
         ],
         "url": "{{api_base_url}}/users"
       },
@@ -211,13 +375,14 @@
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('purchased Pokemon belongs to the user', function () {",
+              "pm.test('the purchased Pokemon belongs to the user', function () {",
               "  pm.response.to.have.status(200);",
               "  const users = pm.response.json();",
-              "  const user = users.find(item => item.userId === pm.variables.get('user_id'));",
+              "  const user = users.find(u => u.userId === pm.collectionVariables.get('user_id'));",
               "  pm.expect(user).to.be.an('object');",
               "  pm.expect(user.pokemons).to.be.an('array');",
-              "  pm.expect(user.pokemons.some(pokemon => pokemon.pokemonId === pm.variables.get('pokemon_id'))).to.be.true;",
+              "  pm.expect(user.pokemons.some(p => p.pokemonId === pm.collectionVariables.get('pokemon_id'))).to.be.true;",
+              "  pm.expect(user.balance).to.eql(75);",
               "});"
             ]
           }
@@ -225,27 +390,24 @@
       ]
     },
     {
-      "name": "8 - Get user level",
+      "name": "10 - Get user level",
       "request": {
         "method": "GET",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
         ],
         "url": "{{levels_api_base_url}}/users/{{user_id}}/level"
       },
       "event": [
         {
-          "listen": "prerequest",
-          "script": {
-            "exec": [
-              "setTimeout(() => {}, 1000);"
-            ]
-          }
-        },
-        {
           "listen": "test",
           "script": {
             "exec": [
+              "// The purchase reaches Levels through EventBridge and SQS, so the level",
+              "// is not there the instant the purchase returns. Poll a few times.",
               "const attempts = Number(pm.collectionVariables.get('level_poll_attempts') || 0);",
               "const response = pm.response.code === 200 ? pm.response.json() : {};",
               "const levelIsReady = response.points >= 100 && response.level >= 1;",
@@ -254,9 +416,9 @@
               "  pm.execution.setNextRequest(pm.info.requestName);",
               "} else {",
               "  pm.collectionVariables.unset('level_poll_attempts');",
-              "  pm.test('level reflects the purchase', function () {",
+              "  pm.test('the level reflects the purchase', function () {",
               "    pm.response.to.have.status(200);",
-              "    pm.expect(response.userId).to.eql(pm.variables.get('user_id'));",
+              "    pm.expect(response.userId).to.eql(pm.collectionVariables.get('user_id'));",
               "    pm.expect(response.points).to.be.at.least(100);",
               "    pm.expect(response.level).to.be.at.least(1);",
               "    pm.expect(response.updatedAt).to.be.a('string').and.not.empty;",

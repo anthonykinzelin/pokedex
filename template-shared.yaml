@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Pokedex shared code. Owns the Lambda layer with the utils and a pinned AWS SDK.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[a-z0-9-]+$'
+
+Resources:
+  # The utils used to be copied into every function package. They now live here
+  # once, which is what lets each function build from its own directory.
+  PokedexUtilsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub '${AWS::StackName}-utils'
+      Description: pokedex-utils helpers and a pinned AWS SDK v3.
+      ContentUri: layers/pokedex-utils/
+      CompatibleRuntimes:
+        - nodejs24.x
+      # Defaults to x86_64, which would not match the arm64 functions.
+      CompatibleArchitectures:
+        - arm64
+      LicenseInfo: MIT-0
+      # SAM rewrites the layer's logical id on every content change, so an
+      # update is a replacement. Retain keeps the old version alive while the
+      # app and levels stacks still point at it. `make clean-layers` prunes.
+      RetentionPolicy: Retain
+    # Metadata is a resource attribute: it sits beside Properties, not inside
+    # it. Without this block sam build silently skips the layer.
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: arm64
+
+  # Same handoff convention as /pokedex/<env>/auth/* and /pokedex/<env>/referential/*.
+  UtilsLayerArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/pokedex/${Env}/shared/utils-layer-arn'
+      Type: String
+      Description: Versioned ARN of the shared pokedex-utils Lambda layer.
+      Value: !Ref PokedexUtilsLayer
+
+Outputs:
+  UtilsLayerArn:
+    Description: Versioned ARN of the shared utils layer.
+    Value: !Ref PokedexUtilsLayer
+  UtilsLayerName:
+    Description: Layer name, used by 'make clean-layers'.
+    Value: !Sub '${AWS::StackName}-utils'

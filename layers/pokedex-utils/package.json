@@ -1,0 +1,13 @@
+{
+  "name": "pokedex-utils",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared DynamoDB, EventBridge and HTTP helpers, shipped as a Lambda layer.",
+  "license": "MIT-0",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1111.0",
+    "@aws-sdk/client-eventbridge": "3.1112.0",
+    "@aws-sdk/lib-dynamodb": "3.1111.0"
+  }
+}

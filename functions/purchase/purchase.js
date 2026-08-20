@@ -1,29 +1,35 @@
 const { randomUUID } = require('node:crypto');
-const { getItem, transactWrite } = require('../../utils/dynamo');
-const { publishEvent } = require('../../utils/events');
 const {
   HttpError,
+  createLogger,
   errorResponse,
+  getItem,
   jsonResponse,
   parseJsonBody,
-} = require('../../utils/http');
+  publishEvent,
+  requireString,
+  serializeError,
+  transactWrite,
+} = require('pokedex-utils');
 
 const TABLE_NAME = process.env.TABLE_NAME;
 const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME;
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
+  const log = createLogger({
+    route: 'purchase',
+    requestId: context?.awsRequestId,
+    apiRequestId: event.requestContext?.requestId,
+  });
+
   try {
-    const userId = event.pathParameters?.userId?.trim();
-    if (!userId) {
-      throw new HttpError(400, 'The userId path parameter is required.');
-    }
+    // The userId stays an opaque path value. It is deliberately not checked
+    // against a UUID shape: the identity scheme is the referential's business,
+    // not the transport's, and an unknown id already 404s below.
+    const userId = requireString(event.pathParameters?.userId, 'userId');
 
     const { pokemonId } = parseJsonBody(event);
-    if (typeof pokemonId !== 'string' || !pokemonId.trim()) {
-      throw new HttpError(400, 'pokemonId must be a non-empty string.');
-    }
-
-    const normalizedPokemonId = pokemonId.trim();
+    const normalizedPokemonId = requireString(pokemonId, 'pokemonId');
     const [user, pokemon] = await Promise.all([
       getItem(TABLE_NAME, `USER#${userId}`, 'PROFILE'),
       getItem(TABLE_NAME, `POKEMON#${normalizedPokemonId}`, 'DETAIL'),
@@ -81,7 +87,9 @@ exports.handler = async (event) => {
             amount: price,
             createdAt,
           },
-          ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)',
+          // A Put supplies the whole primary key, so testing PK alone
+          // already means "no item at this exact PK and SK".
+          ConditionExpression: 'attribute_not_exists(PK)',
         },
       },
     ]);
@@ -100,9 +108,11 @@ exports.handler = async (event) => {
         },
       );
     } catch (eventError) {
-      console.error('The purchase was saved but its event could not be published.', {
+      // Deliberately swallowed: the purchase is already committed and the
+      // brief requires it to succeed even when the Levels service is gone.
+      log.error('The purchase was saved but its event could not be published.', {
         purchaseId,
-        error: eventError.message,
+        ...serializeError(eventError),
       });
     }
 
@@ -114,9 +124,20 @@ exports.handler = async (event) => {
       createdAt,
     });
   } catch (error) {
+    // CancellationReasons lines up with the operations above: index 0 is the
+    // balance update, index 1 is the purchase Put. Only the first can fail for
+    // a reason the caller can act on.
     if (error?.name === 'TransactionCanceledException') {
-      return errorResponse(new HttpError(409, 'The purchase could not be completed.'));
+      const reasons = error.CancellationReasons || [];
+
+      if (reasons[0]?.Code === 'ConditionalCheckFailed') {
+        return errorResponse(
+          new HttpError(409, 'The user does not have enough balance.'),
+          log,
+        );
+      }
     }
-    return errorResponse(error);
+
+    return errorResponse(error, log);
   }
 };

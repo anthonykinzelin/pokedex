@@ -1,0 +1,12 @@
+{
+  "name": "pokedex",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dev-only manifest so require('pokedex-utils') resolves outside Lambda too.",
+  "scripts": {
+    "test": "node --test 'tests/*.test.js'"
+  },
+  "dependencies": {
+    "pokedex-utils": "file:layers/pokedex-utils"
+  }
+}

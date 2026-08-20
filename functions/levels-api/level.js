@@ -1,14 +1,24 @@
-const { getItem } = require('../../utils/dynamo');
-const { errorResponse, jsonResponse } = require('../../utils/http');
+const {
+  createLogger,
+  errorResponse,
+  getItem,
+  jsonResponse,
+  requireString,
+} = require('pokedex-utils');
 
 const TABLE_NAME = process.env.TABLE_NAME;
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
+  const log = createLogger({
+    route: 'levels-api',
+    requestId: context?.awsRequestId,
+    apiRequestId: event.requestContext?.requestId,
+  });
+
   try {
-    const userId = event.pathParameters?.userId?.trim();
-    if (!userId) {
-      return jsonResponse(400, { message: 'The userId path parameter is required.' });
-    }
+    // Thrown, not returned: every error body in the API is built by
+    // errorResponse, so this 400 gets the same shape and logging as the rest.
+    const userId = requireString(event.pathParameters?.userId, 'userId');
 
     const item = await getItem(TABLE_NAME, `USER#${userId}`, 'LEVEL');
 
@@ -19,6 +29,6 @@ exports.handler = async (event) => {
       updatedAt: item?.updatedAt || null,
     });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, log);
   }
 };

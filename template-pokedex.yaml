@@ -7,6 +7,14 @@ Parameters:
     Type: String
     Default: dev
     AllowedPattern: '^[a-z0-9-]+$'
+  UtilsLayerArn:
+    Type: String
+    Description: >-
+      Versioned ARN of the shared pokedex-utils layer, read from
+      /pokedex/<Env>/shared/utils-layer-arn by the Makefile. No default on
+      purpose: a stale fake ARN reaching CloudFormation is far worse than a
+      missing-parameter error.
+    AllowedPattern: '^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:layer:[a-zA-Z0-9._-]+:\d+$'
 
 Globals:
   Function:
@@ -15,6 +23,8 @@ Globals:
       - arm64
     Timeout: 10
     MemorySize: 256
+    Layers:
+      - !Ref UtilsLayerArn
     Environment:
       Variables:
         TABLE_NAME: !Ref PokedexTable
@@ -92,14 +102,22 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-users'
-      CodeUri: src/
-      Handler: lambda/pokemon-users/users.handler
+      CodeUri: functions/users/
+      Handler: users.handler
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref PokedexTable
         - Statement:
+            # GET /users queries GSI1, which is a separate resource ARN.
             - Effect: Allow
-              Action: dynamodb:PutItem
+              Action: dynamodb:Query
+              Resource: !Sub '${PokedexTable.Arn}/index/GSI1'
+            # GetItem reads the name reservation when a creation conflicts.
+            # PutItem covers both writes of the TransactWriteItems call: a
+            # transaction is authorised through its underlying operations, so
+            # there is no dynamodb:TransactWriteItems IAM action to grant.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
               Resource: !GetAtt PokedexTable.Arn
       Events:
         ListUsers:
@@ -127,12 +145,15 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-catalog'
-      CodeUri: src/
-      Handler: lambda/pokemon-catalog/catalog.handler
+      CodeUri: functions/catalog/
+      Handler: catalog.handler
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref PokedexTable
         - Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub '${PokedexTable.Arn}/index/GSI1'
+            # The pokemonId is a slug of the name, so a single conditional
+            # PutItem is all the uniqueness this route needs.
             - Effect: Allow
               Action: dynamodb:PutItem
               Resource: !GetAtt PokedexTable.Arn
@@ -162,8 +183,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-purchase'
-      CodeUri: src/
-      Handler: lambda/pokemon-purchase/purchase.handler
+      CodeUri: functions/purchase/
+      Handler: purchase.handler
       Environment:
         Variables:
           EVENT_BUS_NAME: !Ref PurchaseEventBus
@@ -174,7 +195,6 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
-                - dynamodb:TransactWriteItems
               Resource: !GetAtt PokedexTable.Arn
             - Effect: Allow
               Action: events:PutEvents

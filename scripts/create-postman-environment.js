@@ -58,8 +58,9 @@ const environment = {
     { key: 'client_secret', value: clientSecret, enabled: true, type: 'secret' },
     { key: 'scope', value: 'pokedex/read pokedex/write', enabled: true },
     { key: 'access_token', value: '', enabled: true, type: 'secret' },
-    { key: 'user_id', value: '', enabled: true },
-    { key: 'pokemon_id', value: '', enabled: true },
+    // user_id, pokemon_id and the names are deliberately absent. They are set
+    // at run time by the collection, and an environment variable would take
+    // precedence over the collection variable and shadow the captured value.
   ],
   _postman_variable_scope: 'environment',
 };

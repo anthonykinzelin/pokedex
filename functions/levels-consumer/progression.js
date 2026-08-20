@@ -1,4 +1,10 @@
-const { getItem, transactWrite } = require('../../utils/dynamo');
+const {
+  createLogger,
+  getItem,
+  requireStrings,
+  serializeError,
+  transactWrite,
+} = require('pokedex-utils');
 
 const TABLE_NAME = process.env.TABLE_NAME;
 const POINTS_PER_PURCHASE = 100;
@@ -13,18 +19,17 @@ function purchaseDetail(record) {
     throw new Error('Unsupported purchase event.');
   }
 
-  for (const field of ['purchaseId', 'userId', 'pokemonId', 'occurredAt']) {
-    if (typeof detail[field] !== 'string' || !detail[field].trim()) {
-      throw new Error(`The event detail is missing ${field}.`);
-    }
-  }
-
-  return detail;
+  // Same helper as the HTTP handlers. The 400 it carries is meaningless off
+  // the HTTP path: here the throw just sends the message to the DLQ. The
+  // returned values are trimmed, so updateLevel does not have to re-trim.
+  return {
+    ...detail,
+    ...requireStrings(detail, ['purchaseId', 'userId', 'pokemonId', 'occurredAt']),
+  };
 }
 
-async function updateLevel(detail) {
-  const userId = detail.userId.trim();
-  const purchaseId = detail.purchaseId.trim();
+async function updateLevel(detail, log) {
+  const { userId, purchaseId } = detail;
   const userKey = `USER#${userId}`;
 
   try {
@@ -36,11 +41,14 @@ async function updateLevel(detail) {
             SK: `PURCHASE#${purchaseId}`,
             entity: 'PROCESSED_PURCHASE',
             purchaseId,
-            pokemonId: detail.pokemonId.trim(),
+            pokemonId: detail.pokemonId,
             occurredAt: detail.occurredAt,
             processedAt: new Date().toISOString(),
           },
-          ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)',
+          // A Put supplies the whole primary key, so PK alone already means
+          // "no marker at this exact PK and SK". This is what makes a
+          // redelivered SQS message stop before it adds the points twice.
+          ConditionExpression: 'attribute_not_exists(PK)',
         },
       },
       {
@@ -75,21 +83,26 @@ async function updateLevel(detail) {
       throw error;
     }
 
-    console.log(`Purchase ${purchaseId} was already processed.`);
+    log.info('Purchase was already processed.', { purchaseId });
   }
 }
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
+  const log = createLogger({
+    route: 'levels-consumer',
+    requestId: context?.awsRequestId,
+  });
   const batchItemFailures = [];
 
   for (const record of event.Records || []) {
+    const recordLog = log.child({ messageId: record.messageId });
+
     try {
-      await updateLevel(purchaseDetail(record));
+      await updateLevel(purchaseDetail(record), recordLog);
     } catch (error) {
-      console.error('Could not process purchase event.', {
-        messageId: record.messageId,
-        error: error.message,
-      });
+      // Reported per message rather than failing the batch, so one bad event
+      // cannot block the others. After three attempts SQS moves it to the DLQ.
+      recordLog.error('Could not process purchase event.', serializeError(error));
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
