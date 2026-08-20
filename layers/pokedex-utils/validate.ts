@@ -1,17 +1,28 @@
-const { HttpError } = require('./http');
+import { HttpError } from './http';
 
 // A 400 that also names the offending field. Extending HttpError means
 // errorResponse already knows how to render it, and the field name reaches the
 // response body through HttpError's details.
-class ValidationError extends HttpError {
-  constructor(message, field) {
+export class ValidationError extends HttpError {
+  field: string;
+
+  constructor(message: string, field: string) {
     super(400, message, { field });
     this.name = 'ValidationError';
     this.field = field;
   }
 }
 
-function requireString(value, field, { min = 1, max = 200 } = {}) {
+export interface StringOptions {
+  min?: number;
+  max?: number;
+}
+
+export function requireString(
+  value: unknown,
+  field: string,
+  { min = 1, max = 200 }: StringOptions = {},
+): string {
   if (typeof value !== 'string') {
     throw new ValidationError(`${field} must be a string.`, field);
   }
@@ -35,9 +46,18 @@ function requireString(value, field, { min = 1, max = 200 } = {}) {
   return trimmed;
 }
 
+export interface IntegerOptions {
+  min?: number;
+  max?: number;
+}
+
 // Money is an integer number of pokecoins, so balance - price in the purchase
 // transaction can never accumulate floating point dust.
-function requireInteger(value, field, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+export function requireInteger(
+  value: unknown,
+  field: string,
+  { min = 0, max = Number.MAX_SAFE_INTEGER }: IntegerOptions = {},
+): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new ValidationError(`${field} must be an integer.`, field);
   }
@@ -48,12 +68,18 @@ function requireInteger(value, field, { min = 0, max = Number.MAX_SAFE_INTEGER }
   return value;
 }
 
-// Every listed field must be a non-empty string. Returns the trimmed values.
-function requireStrings(object, fields) {
-  const result = {};
+// Every listed field must be a non-empty string. Returns the trimmed values,
+// keyed by the field names that were asked for, so the caller gets
+// `{ userId: string, purchaseId: string }` rather than an untyped record.
+export function requireStrings<K extends string>(
+  object: unknown,
+  fields: readonly K[],
+): Record<K, string> {
+  const source = object as Record<string, unknown> | null | undefined;
+  const result = {} as Record<K, string>;
 
   for (const field of fields) {
-    result[field] = requireString(object?.[field], field);
+    result[field] = requireString(source?.[field], field);
   }
 
   return result;
@@ -61,21 +87,31 @@ function requireStrings(object, fields) {
 
 // Rejecting unknown fields is what makes a stale client fail loudly. Without
 // it, a caller still sending the old userId would be silently ignored.
-function rejectUnknownFields(object, allowed) {
+export function rejectUnknownFields(
+  object: Record<string, unknown>,
+  allowed: readonly string[],
+): void {
   const unknown = Object.keys(object).filter((key) => !allowed.includes(key));
 
   if (unknown.length > 0) {
     throw new ValidationError(
       `Unknown field(s): ${unknown.join(', ')}. Allowed field(s): ${allowed.join(', ')}.`,
-      unknown[0],
+      unknown[0]!,
     );
   }
 }
 
-module.exports = {
-  ValidationError,
-  rejectUnknownFields,
-  requireInteger,
-  requireString,
-  requireStrings,
-};
+// process.env values are string | undefined, so every table name would need a
+// check at each call site. Reading them through here instead turns a missing
+// variable into one loud failure at module load, rather than an undefined
+// table name reaching DynamoDB and coming back as a confusing validation
+// error on the first request.
+export function requireEnv(name: string): string {
+  const value = process.env[name];
+
+  if (!value) {
+    throw new Error(`${name} is not configured.`);
+  }
+
+  return value;
+}

@@ -1,4 +1,4 @@
-const { ValidationError, requireString } = require('./validate');
+import { ValidationError, requireString, type StringOptions } from './validate';
 
 // A letter or digit of any script, then letters, digits, spaces and - _ . '
 // '#' is excluded on purpose: it separates the parts of every PK and SK, so a
@@ -8,7 +8,11 @@ const NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} '._-]*$/u;
 // The name people see. NFC composes accents, so "e" followed by a combining
 // acute stops being a different string from "é"; collapsing whitespace makes
 // "Ash  Ketchum" the same as "Ash Ketchum".
-function normalizeDisplayName(value, field, { min = 2, max = 60 } = {}) {
+export function normalizeDisplayName(
+  value: unknown,
+  field: string,
+  { min = 2, max = 60 }: StringOptions = {},
+): string {
   const trimmed = requireString(value, field);
   const displayName = trimmed.normalize('NFC').replace(/\s+/g, ' ');
   // Code points, not UTF-16 units: String.length counts a surrogate pair twice.
@@ -34,13 +38,13 @@ function normalizeDisplayName(value, field, { min = 2, max = 60 } = {}) {
 // variants (full-width Ａ, the ﬁ ligature) and toLowerCase folds case, so
 // "Ash", "ash" and "Ａsh" are one trainer. Not toLocaleLowerCase: that depends
 // on the host locale, which would make the key differ between machines.
-function toNameKey(displayName) {
+export function toNameKey(displayName: string): string {
   return displayName.normalize('NFKC').toLowerCase();
 }
 
 // A url-safe identity derived from the name. Used where the name IS the
 // identity, so that a single conditional write gives uniqueness for free.
-function toSlug(displayName) {
+export function toSlug(displayName: string): string {
   return displayName
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')  // drop the combining accents NFKD split off
@@ -48,5 +52,3 @@ function toSlug(displayName) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 }
-
-module.exports = { normalizeDisplayName, toNameKey, toSlug };

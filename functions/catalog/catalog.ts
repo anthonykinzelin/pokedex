@@ -1,20 +1,24 @@
-const {
+import type { APIGatewayProxyEvent, APIGatewayProxyHandler } from 'aws-lambda';
+import {
   HttpError,
   ValidationError,
   createLogger,
   errorResponse,
+  isErrorNamed,
   jsonResponse,
   normalizeDisplayName,
   parseJsonBody,
   putItemConditional,
   queryAllByGSI,
   rejectUnknownFields,
+  requireEnv,
   requireInteger,
   requireString,
   toSlug,
-} = require('pokedex-utils');
+  type Logger,
+} from 'pokedex-utils';
 
-const TABLE_NAME = process.env.TABLE_NAME;
+const TABLE_NAME = requireEnv('TABLE_NAME');
 
 const NAME_MIN_LENGTH = 2;
 const NAME_MAX_LENGTH = 60;
@@ -22,12 +26,21 @@ const TYPE_MAX_LENGTH = 30;
 const MAX_PRICE = 1000000;
 const ALLOWED_CREATE_FIELDS = ['name', 'type', 'price'];
 
+// The stored catalog entry, limited to what is read back out.
+interface PokemonItem {
+  pokemonId: string;
+  name: string;
+  type: string;
+  price: number;
+  createdAt: string;
+}
+
 // A Pokemon is a catalog entry, so a slug of its name is a perfectly good
 // identity. That makes the id itself unique, which is why one conditional
-// PutItem is enough here. Contrast users.js: a user's id is a random UUID and
+// PutItem is enough here. Contrast users.ts: a user's id is a random UUID and
 // the uniqueness lives on a *different* attribute, so it needs a separate
 // reservation item written inside a transaction.
-function readName(value) {
+function readName(value: unknown): { displayName: string; pokemonId: string } {
   const displayName = normalizeDisplayName(value, 'name', {
     min: NAME_MIN_LENGTH,
     max: NAME_MAX_LENGTH,
@@ -42,7 +55,7 @@ function readName(value) {
   return { displayName, pokemonId };
 }
 
-function toPublicPokemon(item) {
+function toPublicPokemon(item: PokemonItem) {
   return {
     pokemonId: item.pokemonId,
     name: item.name,
@@ -53,12 +66,17 @@ function toPublicPokemon(item) {
 }
 
 async function listPokemons() {
-  const items = await queryAllByGSI(TABLE_NAME, 'GSI1', 'GSI1PK', 'ENTITY#POKEMON');
+  const items = await queryAllByGSI<PokemonItem>(
+    TABLE_NAME,
+    'GSI1',
+    'GSI1PK',
+    'ENTITY#POKEMON',
+  );
 
   return jsonResponse(200, items.map(toPublicPokemon));
 }
 
-async function createPokemon(event, log) {
+async function createPokemon(event: APIGatewayProxyEvent, log: Logger) {
   const body = parseJsonBody(event);
   // Fails loudly on a client still sending its own pokemonId.
   rejectUnknownFields(body, ALLOWED_CREATE_FIELDS);
@@ -88,7 +106,7 @@ async function createPokemon(event, log) {
       'attribute_not_exists(PK)',
     );
   } catch (error) {
-    if (error?.name !== 'ConditionalCheckFailedException') {
+    if (!isErrorNamed(error, 'ConditionalCheckFailedException')) {
       throw error;
     }
 
@@ -106,7 +124,7 @@ async function createPokemon(event, log) {
   }));
 }
 
-exports.handler = async (event, context) => {
+export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'catalog',
     requestId: context?.awsRequestId,

@@ -18,16 +18,25 @@ SAM_DEPLOY := sam deploy --resolve-s3 --capabilities CAPABILITY_IAM \
 	--region $(REGION) --profile $(PROFILE)
 
 export npm_config_cache := $(CURDIR)/.npm-cache
+# SAM's esbuild builder looks for the binary in the function directory, then the
+# executable search paths, then PATH. esbuild is a single dev install at the
+# repo root, so exporting this is what lets all five functions find it.
+#
+# It does not help make resolve its own recipe commands: make keeps the PATH it
+# started with for that, which is why tsc is named by full path below.
+export PATH := $(CURDIR)/node_modules/.bin:$(PATH)
+TSC := $(CURDIR)/node_modules/.bin/tsc
 
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
 
-.PHONY: help validate build test aws-check layer-arn deploy deploy-auth deploy-shared \
-	deploy-app deploy-levels postman outputs clean-stack clean-levels clean-app \
-	clean-shared clean-layers clean-auth
+.PHONY: help validate compile build test aws-check layer-arn deploy deploy-auth \
+	deploy-shared deploy-app deploy-levels postman outputs clean-stack clean-levels \
+	clean-app clean-shared clean-layers clean-auth clean-dist
 
 help:
 	@echo "make aws-check     Check the AWS account"
+	@echo "make compile       Compile the TypeScript and type-check the handlers"
 	@echo "make deploy        Deploy the four stacks (auth -> shared -> app -> levels)"
 	@echo "make layer-arn     Print the shared utils layer ARN currently in SSM"
 	@echo "make test          Run the unit tests"
@@ -40,8 +49,19 @@ validate:
 	sam validate --lint --template-file template-pokedex.yaml
 	sam validate --lint --template-file template-levels.yaml
 
+# The handlers are transpiled by esbuild inside sam build, and esbuild does no
+# type checking at all - so tsc is the only thing standing between a type error
+# and a deployed function.
+#
+# The layer is compiled first, for two reasons: its dist/ is what sam build
+# packages into the layer artifact, and its .d.ts files are what the handler
+# project is checked against. The handler project emits nothing.
+compile:
+	$(TSC) -p layers/pokedex-utils
+	$(TSC) -p tsconfig.json
+
 # Offline build of everything, using a placeholder layer ARN that is never deployed.
-build: validate
+build: validate compile
 	sam build --template-file template-auth.yaml --build-dir .aws-sam/auth
 	MAKEFLAGS= sam build --template-file template-shared.yaml --build-dir .aws-sam/shared
 	sam build --template-file template-pokedex.yaml --build-dir .aws-sam/app \
@@ -49,7 +69,9 @@ build: validate
 	sam build --template-file template-levels.yaml --build-dir .aws-sam/levels \
 		--parameter-overrides Env=$(ENV) UtilsLayerArn=$(PLACEHOLDER_LAYER_ARN)
 
-test:
+# The suites require('pokedex-utils'), which resolves through the node_modules
+# symlink to layers/pokedex-utils/dist, so the layer has to be compiled first.
+test: compile
 	node --test 'tests/*.test.js'
 
 aws-check:
@@ -75,7 +97,7 @@ deploy-auth:
 
 # MAKEFLAGS= keeps the jobserver of an outer `make -j` out of the nested make
 # that sam build runs for the layer.
-deploy-shared:
+deploy-shared: compile
 	MAKEFLAGS= sam build --template-file template-shared.yaml --build-dir .aws-sam/shared
 	$(SAM_DEPLOY) --template-file .aws-sam/shared/template.yaml \
 		--stack-name $(SHARED_STACK) --parameter-overrides Env=$(ENV)
@@ -84,7 +106,7 @@ deploy-shared:
 # a {{resolve:ssm}} reference. Under a transform CloudFormation diffs the
 # literal template text, so an unchanged {{resolve:ssm}} string would produce an
 # empty changeset and the functions would silently keep the old layer version.
-deploy-app:
+deploy-app: compile
 	@set -e ; \
 	LAYER_ARN=$$($(AWS) ssm get-parameter --name $(UTILS_LAYER_PARAM) \
 		--query Parameter.Value --output text) ; \
@@ -96,7 +118,7 @@ deploy-app:
 		--stack-name $(APP_STACK) \
 		--parameter-overrides Env=$(ENV) UtilsLayerArn=$$LAYER_ARN
 
-deploy-levels:
+deploy-levels: compile
 	@set -e ; \
 	LAYER_ARN=$$($(AWS) ssm get-parameter --name $(UTILS_LAYER_PARAM) \
 		--query Parameter.Value --output text) ; \
@@ -140,6 +162,9 @@ clean-layers:
 		echo "Deleting $(UTILS_LAYER_NAME):$$v" ; \
 		$(AWS) lambda delete-layer-version --layer-name $(UTILS_LAYER_NAME) --version-number $$v ; \
 	done
+
+clean-dist:
+	rm -rf layers/pokedex-utils/dist layers/pokedex-utils/.tsbuildinfo
 
 clean-auth:
 	sam delete --stack-name $(AUTH_STACK) --region $(REGION) --profile $(PROFILE) --no-prompts

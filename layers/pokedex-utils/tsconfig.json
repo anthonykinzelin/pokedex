@@ -1,0 +1,25 @@
+{
+  // Emits the layer. dist/ is what the layer Makefile packages into
+  // nodejs/node_modules/pokedex-utils, and the .d.ts files it produces are
+  // what the handlers are type-checked against.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "declaration": true,
+    // Lets an editor jump from a handler through dist/*.d.ts to the real .ts.
+    "declarationMap": true,
+    // inlineSources, not just sourceMap: the .ts files are not deployed, so a
+    // map that only points at ../logger.ts would be dead weight in the layer.
+    // Embedding the source is what makes --enable-source-maps produce a real
+    // layer frame in the stack traces the logger writes to CloudWatch.
+    "sourceMap": true,
+    "inlineSources": true,
+    "incremental": true,
+    // Outside dist/, or the 200 KB of build metadata would be copied into the
+    // layer artifact by the Makefile.
+    "tsBuildInfoFile": ".tsbuildinfo"
+  },
+  "include": ["*.ts"],
+  "exclude": ["dist"]
+}

@@ -1,0 +1,23 @@
+{
+  // Shared compiler options. Two projects extend this: the layer, which emits
+  // JavaScript and .d.ts files, and the root project, which only type-checks
+  // the handlers because esbuild does their emit.
+  "compilerOptions": {
+    // The runtime is nodejs24.x, so nothing needs downlevelling. A lower
+    // target would make esbuild and tsc rewrite syntax for no reason.
+    "target": "es2023",
+    "lib": ["es2023"],
+    // CommonJS out, because every handler and the layer index are require()d,
+    // not imported. Neither package.json declares "type": "module", so
+    // nodenext resolves to CommonJS emit on its own.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "esModuleInterop": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    // The AWS SDK ships a very large amount of generated typing. Checking it
+    // adds seconds to every build and can never fail on our code.
+    "skipLibCheck": true,
+    "types": ["node"]
+  }
+}

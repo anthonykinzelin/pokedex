@@ -1,0 +1,7 @@
+{
+  "name": "pokedex-users-function",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Manifest that sam build's esbuild workflow expects in a function directory. Deliberately no dependencies: pokedex-utils and the AWS SDK come from the shared layer and are declared under External in the template, so nothing is bundled into the artifact.",
+  "license": "MIT-0"
+}

@@ -1,21 +1,44 @@
-const { randomUUID } = require('node:crypto');
-const {
+import { randomUUID } from 'node:crypto';
+import type { APIGatewayProxyHandler } from 'aws-lambda';
+import {
   HttpError,
+  cancellationReasons,
   createLogger,
   errorResponse,
   getItem,
+  isErrorNamed,
   jsonResponse,
   parseJsonBody,
   publishEvent,
+  requireEnv,
   requireString,
   serializeError,
   transactWrite,
-} = require('pokedex-utils');
+} from 'pokedex-utils';
 
-const TABLE_NAME = process.env.TABLE_NAME;
-const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME;
+const TABLE_NAME = requireEnv('TABLE_NAME');
+// Read at module load rather than left to publishEvent's own guard. That guard
+// throws inside the try below, which is deliberately swallowed so a Levels
+// outage cannot fail a committed purchase - but it would swallow a missing
+// variable too, and purchases would succeed while no event was ever published.
+// A misconfigured deploy is not an outage, so it fails here instead, loudly.
+const EVENT_BUS_NAME = requireEnv('EVENT_BUS_NAME');
 
-exports.handler = async (event, context) => {
+// The balance update is operation 0 and the purchase Put is operation 1, so
+// CancellationReasons lines up with these indexes.
+const BALANCE_OPERATION = 0;
+
+interface UserItem {
+  balance: number;
+}
+
+interface PokemonItem {
+  name: string;
+  type: string;
+  price: number;
+}
+
+export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'purchase',
     requestId: context?.awsRequestId,
@@ -31,8 +54,8 @@ exports.handler = async (event, context) => {
     const { pokemonId } = parseJsonBody(event);
     const normalizedPokemonId = requireString(pokemonId, 'pokemonId');
     const [user, pokemon] = await Promise.all([
-      getItem(TABLE_NAME, `USER#${userId}`, 'PROFILE'),
-      getItem(TABLE_NAME, `POKEMON#${normalizedPokemonId}`, 'DETAIL'),
+      getItem<UserItem>(TABLE_NAME, `USER#${userId}`, 'PROFILE'),
+      getItem<PokemonItem>(TABLE_NAME, `POKEMON#${normalizedPokemonId}`, 'DETAIL'),
     ]);
 
     if (!user) {
@@ -127,10 +150,10 @@ exports.handler = async (event, context) => {
     // CancellationReasons lines up with the operations above: index 0 is the
     // balance update, index 1 is the purchase Put. Only the first can fail for
     // a reason the caller can act on.
-    if (error?.name === 'TransactionCanceledException') {
-      const reasons = error.CancellationReasons || [];
+    if (isErrorNamed(error, 'TransactionCanceledException')) {
+      const reasons = cancellationReasons(error);
 
-      if (reasons[0]?.Code === 'ConditionalCheckFailed') {
+      if (reasons[BALANCE_OPERATION]?.Code === 'ConditionalCheckFailed') {
         return errorResponse(
           new HttpError(409, 'The user does not have enough balance.'),
           log,

@@ -17,7 +17,6 @@ Resources:
       ContentUri: layers/pokedex-utils/
       CompatibleRuntimes:
         - nodejs24.x
-      # Defaults to x86_64, which would not match the arm64 functions.
       CompatibleArchitectures:
         - arm64
       LicenseInfo: MIT-0

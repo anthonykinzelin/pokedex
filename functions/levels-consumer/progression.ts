@@ -1,15 +1,28 @@
-const {
+import type { SQSBatchItemFailure, SQSHandler, SQSRecord } from 'aws-lambda';
+import {
   createLogger,
   getItem,
+  isErrorNamed,
+  requireEnv,
   requireStrings,
   serializeError,
   transactWrite,
-} = require('pokedex-utils');
+  type Logger,
+} from 'pokedex-utils';
 
-const TABLE_NAME = process.env.TABLE_NAME;
+const TABLE_NAME = requireEnv('TABLE_NAME');
 const POINTS_PER_PURCHASE = 100;
 
-function purchaseDetail(record) {
+// The fields requireStrings guarantees. The rest of the detail is carried
+// through untouched, which is why the intersection keeps the index signature.
+type PurchaseDetail = Record<string, unknown> & {
+  purchaseId: string;
+  userId: string;
+  pokemonId: string;
+  occurredAt: string;
+};
+
+function purchaseDetail(record: SQSRecord): PurchaseDetail {
   const event = JSON.parse(record.body);
   const detail = event.detail;
 
@@ -28,7 +41,7 @@ function purchaseDetail(record) {
   };
 }
 
-async function updateLevel(detail, log) {
+async function updateLevel(detail: PurchaseDetail, log: Logger): Promise<void> {
   const { userId, purchaseId } = detail;
   const userKey = `USER#${userId}`;
 
@@ -69,7 +82,7 @@ async function updateLevel(detail, log) {
       },
     ]);
   } catch (error) {
-    if (error?.name !== 'TransactionCanceledException') {
+    if (!isErrorNamed(error, 'TransactionCanceledException')) {
       throw error;
     }
 
@@ -87,12 +100,12 @@ async function updateLevel(detail, log) {
   }
 }
 
-exports.handler = async (event, context) => {
+export const handler: SQSHandler = async (event, context) => {
   const log = createLogger({
     route: 'levels-consumer',
     requestId: context?.awsRequestId,
   });
-  const batchItemFailures = [];
+  const batchItemFailures: SQSBatchItemFailure[] = [];
 
   for (const record of event.Records || []) {
     const recordLog = log.child({ messageId: record.messageId });

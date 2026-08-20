@@ -1,11 +1,16 @@
-const {
+import {
   EventBridgeClient,
   PutEventsCommand,
-} = require('@aws-sdk/client-eventbridge');
+} from '@aws-sdk/client-eventbridge';
 
 const eventBridgeClient = new EventBridgeClient({});
 
-async function publishEvent(eventBusName, source, detailType, detail) {
+export async function publishEvent(
+  eventBusName: string | undefined,
+  source: string,
+  detailType: string,
+  detail: unknown,
+): Promise<void> {
   if (!eventBusName) {
     throw new Error('EVENT_BUS_NAME is not configured.');
   }
@@ -28,5 +33,3 @@ async function publishEvent(eventBusName, source, detailType, detail) {
     throw new Error(`EventBridge rejected the event: ${errorCode}${errorMessage}`);
   }
 }
-
-module.exports = { publishEvent };

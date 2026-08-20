@@ -1,0 +1,12 @@
+{
+  // Type-checks the five handlers. No emit on purpose: sam build runs esbuild
+  // for the functions, and esbuild does not type-check, so this project is the
+  // only thing standing between a type error and a deployed function.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  // pokedex-utils resolves through the node_modules symlink to
+  // layers/pokedex-utils, so the layer must be compiled first.
+  "include": ["functions/**/*.ts"]
+}

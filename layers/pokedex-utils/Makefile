@@ -8,15 +8,19 @@
 #
 # Lambda searches /opt/nodejs/node_modules for Node layers, so that is where
 # the package has to land for require('pokedex-utils') to resolve.
+#
+# dist/ is the TypeScript output and must already exist: `make compile` in the
+# repo root runs tsc before any sam build. Copying the whole directory rather
+# than naming each file means a new module needs no edit here.
 
 .PHONY: build-PokedexUtilsLayer
 
 build-PokedexUtilsLayer:
+	test -d dist || { echo "layers/pokedex-utils/dist is missing. Run 'make compile' first." >&2 ; exit 1 ; }
 	mkdir -p "$(ARTIFACTS_DIR)/nodejs"
 	cp package.json package-lock.json "$(ARTIFACTS_DIR)/nodejs/"
 	cd "$(ARTIFACTS_DIR)/nodejs" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 	mkdir -p "$(ARTIFACTS_DIR)/nodejs/node_modules/pokedex-utils"
-	cp package.json index.js aws.js dynamo.js events.js http.js logger.js names.js \
-		validate.js \
-		"$(ARTIFACTS_DIR)/nodejs/node_modules/pokedex-utils/"
+	cp package.json "$(ARTIFACTS_DIR)/nodejs/node_modules/pokedex-utils/"
+	cp -R dist "$(ARTIFACTS_DIR)/nodejs/node_modules/pokedex-utils/"
 	rm -f "$(ARTIFACTS_DIR)/nodejs/package-lock.json"

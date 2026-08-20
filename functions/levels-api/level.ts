@@ -1,14 +1,24 @@
-const {
+import type { APIGatewayProxyHandler } from 'aws-lambda';
+import {
   createLogger,
   errorResponse,
   getItem,
   jsonResponse,
+  requireEnv,
   requireString,
-} = require('pokedex-utils');
+} from 'pokedex-utils';
 
-const TABLE_NAME = process.env.TABLE_NAME;
+const TABLE_NAME = requireEnv('TABLE_NAME');
 
-exports.handler = async (event, context) => {
+// Only the attributes this route reads back. The consumer owns the rest of the
+// item, so naming them here would be a second, drifting definition.
+interface LevelItem {
+  points?: number;
+  level?: number;
+  updatedAt?: string;
+}
+
+export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'levels-api',
     requestId: context?.awsRequestId,
@@ -20,7 +30,7 @@ exports.handler = async (event, context) => {
     // errorResponse, so this 400 gets the same shape and logging as the rest.
     const userId = requireString(event.pathParameters?.userId, 'userId');
 
-    const item = await getItem(TABLE_NAME, `USER#${userId}`, 'LEVEL');
+    const item = await getItem<LevelItem>(TABLE_NAME, `USER#${userId}`, 'LEVEL');
 
     return jsonResponse(200, {
       userId,

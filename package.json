@@ -2,11 +2,18 @@
   "name": "pokedex",
   "version": "1.0.0",
   "private": true,
-  "description": "Dev-only manifest so require('pokedex-utils') resolves outside Lambda too.",
+  "description": "Dev-only manifest: makes require('pokedex-utils') resolve outside Lambda, and holds the TypeScript toolchain the layer and the handlers are built with.",
   "scripts": {
-    "test": "node --test 'tests/*.test.js'"
+    "compile": "tsc -p layers/pokedex-utils && tsc -p tsconfig.json",
+    "test": "npm run compile && node --test 'tests/*.test.js'"
   },
   "dependencies": {
     "pokedex-utils": "file:layers/pokedex-utils"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.162",
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }

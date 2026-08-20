@@ -163,3 +163,6 @@ report.xml
 # Generated after AWS deployment. The environment contains a Cognito secret.
 postman/pokedex.generated.postman_environment.json
 postman/pokedex.generated.postman_collection.json
+
+# TypeScript incremental build metadata (layers/pokedex-utils/.tsbuildinfo).
+*.tsbuildinfo

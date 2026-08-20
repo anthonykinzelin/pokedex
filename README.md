@@ -106,10 +106,11 @@ change to one handler invalidated all of them.
 
 Now `layers/pokedex-utils/` is built once into a Lambda layer and each function
 builds from its own directory under `functions/`. A function artifact is a few KB
-containing exactly one `.js` file, and the handlers import the helpers by name:
+containing one `.js` file and its source map, and the handlers import the helpers
+by name:
 
-```js
-const { getItem, errorResponse } = require('pokedex-utils');
+```ts
+import { getItem, errorResponse } from 'pokedex-utils';
 ```
 
 That resolves because Lambda puts `/opt/nodejs/node_modules` on `NODE_PATH`. The
@@ -141,6 +142,91 @@ values, so that trap never applies to them.
 
 The consequence to remember: **editing a util requires redeploying the app and
 levels stacks**, not just the shared one. `make deploy` does all four in order.
+
+## TypeScript
+
+Handlers and utils are written in TypeScript and JavaScript is what gets
+deployed. That step is not optional: Lambda's handler loader only resolves
+`.js`, `.mjs` and `.cjs`, so it would never find `handler` inside `users.ts`.
+Node 24 can *run* TypeScript by stripping types, but that happens too late to
+help the loader.
+
+Two different tools do the compiling, split by resource type.
+
+**The handlers are transpiled by esbuild, inside `sam build`.** Each function
+carries `Metadata: BuildMethod: esbuild`, so SAM runs esbuild itself and writes
+`users.js` into `.aws-sam/`. `CodeUri` still points at the source directory and
+`Handler` is still `users.handler`; no TypeScript file ever reaches an artifact.
+The one line that matters most there is:
+
+```yaml
+        External:
+          - pokedex-utils
+```
+
+Without it esbuild follows the import and inlines the whole layer into every
+function, which quietly undoes the reason the layer exists. `Minify: false` is
+also deliberate: minified output would make the `stack` field the logger writes
+to CloudWatch unreadable.
+
+**The layer is compiled by `tsc`, before `sam build` runs.** The esbuild build
+method exists only for `AWS::Serverless::Function`, never for
+`AWS::Serverless::LayerVersion` — and `tsc` is the right tool here anyway.
+Bundling would collapse the eight modules into one file and emit no `.d.ts`,
+and those `.d.ts` files are exactly what lets the handlers be type-checked
+against the layer across the package boundary. `layers/pokedex-utils/dist` is
+what the layer Makefile packages, and `package.json` points `main` and `types`
+at it.
+
+### esbuild does not type-check
+
+This is the part worth remembering. esbuild strips types and never looks at
+them, so on its own it would happily deploy code that does not type-check.
+`make compile` runs `tsc` twice — once to emit the layer, once with `noEmit` to
+check the handlers — and every `build` and `deploy-*` target depends on it. That
+is the only thing standing between a type error and a deployed function.
+
+```
+make compile
+  ├─ tsc -p layers/pokedex-utils   -> dist/*.js + dist/*.d.ts
+  └─ tsc -p tsconfig.json          -> noEmit, checks the five handlers
+```
+
+Because the type-check resolves `pokedex-utils` through the `node_modules`
+symlink to the layer's `dist`, the layer always has to be compiled first. The
+Makefile sequences that; `npm run compile` does the same thing.
+
+### What the types caught
+
+Three changes came out of turning `strict` on, each of them a real failure mode
+rather than a syntax concern:
+
+- **`errors.ts`** — under `strict`, a caught error is `unknown`, so
+  `error.name === 'TransactionCanceledException'` and `error.CancellationReasons`
+  no longer compile. `isErrorNamed` and `cancellationReasons` narrow structurally
+  and keep the runtime behaviour identical. Narrowing with `instanceof` against
+  the SDK's exception classes was rejected on purpose: no handler imports the
+  SDK, and `instanceof` returns false whenever two copies of a module end up in
+  one process.
+- **`requireEnv`** — `process.env.TABLE_NAME` is `string | undefined`, which
+  fails at every call site that passes it to DynamoDB. Reading it through
+  `requireEnv` turns a missing variable into one loud failure at module load,
+  instead of an undefined table name reaching DynamoDB and coming back as a
+  confusing validation error on the first request. In `purchase.ts` this also
+  closed a real hole: `EVENT_BUS_NAME` was only checked inside `publishEvent`,
+  whose throw is deliberately swallowed so a Levels outage cannot fail a
+  committed purchase — which meant a misconfigured bus would have let purchases
+  succeed while no event was ever published.
+- **`SQSHandler`** — typing the consumer verifies the
+  `{ batchItemFailures: [{ itemIdentifier }] }` shape that
+  `FunctionResponseTypes: ReportBatchItemFailures` depends on. Misspell that key
+  and partial batch failures silently stop being reported; now it fails the
+  build.
+
+Source maps are on (`Sourcemap: true`, plus `NODE_OPTIONS:
+--enable-source-maps` in `Globals`) with the TypeScript source embedded, so a
+stack trace in CloudWatch points at the `.ts` line rather than the transpiled
+one.
 
 ## Requirements
 
@@ -217,6 +303,10 @@ make test
 tests cover the pure logic: name normalisation and folding, the slug, the
 validation helpers, and the mapping from an error to an HTTP response.
 
+The suites are plain JavaScript and load `pokedex-utils` the same way a handler
+does, which means they exercise the compiled layer rather than the TypeScript
+sources. `make test` depends on `make compile` for that reason.
+
 ## Logs
 
 Handlers log one JSON object per line, so CloudWatch Logs Insights can filter on
@@ -234,6 +324,7 @@ logged as `apiRequestId`, so a failing call can be traced from the client.
 ## Other commands
 
 ```bash
+make compile        # compile the layer and type-check the handlers
 make deploy-auth    # deploy Cognito only
 make deploy-shared  # publish a new version of the utils layer
 make deploy-app     # deploy the referential service only
@@ -242,6 +333,7 @@ make layer-arn      # print the layer ARN currently in SSM
 make outputs        # show stack outputs
 make test           # run the unit tests
 make clean-stack    # delete the four stacks and prune retained layer versions
+make clean-dist     # remove the compiled layer output
 ```
 
 The layer is declared `RetentionPolicy: Retain`, because SAM replaces the layer

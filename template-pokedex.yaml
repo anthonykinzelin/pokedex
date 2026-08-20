@@ -28,6 +28,11 @@ Globals:
     Environment:
       Variables:
         TABLE_NAME: !Ref PokedexTable
+        # Pairs with Sourcemap: true in each function's BuildProperties, so a
+        # stack trace points at the TypeScript line rather than the transpiled
+        # one. sam build appends this on its own when Sourcemap is true; it is
+        # spelled out here so the template shows what the runtime actually gets.
+        NODE_OPTIONS: --enable-source-maps
 
 Resources:
   PurchaseEventBus:
@@ -135,6 +140,26 @@ Resources:
               Authorizer: CognitoAuthorizer
               AuthorizationScopes:
                 - pokedex/write
+    # esbuild transpiles users.ts into users.js at build time. Lambda's
+    # handler loader only resolves .js, .mjs and .cjs, so TypeScript can never
+    # be deployed as it is written. esbuild does no type checking of its own:
+    # that is what `make compile` runs tsc for, before every sam build.
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - users.ts
+        # pokedex-utils is resolved at runtime from /opt/nodejs/node_modules.
+        # Without this line esbuild inlines the whole layer into every artifact
+        # and the layer stops being worth having.
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        # Overrides esbuild's own default of true. Minified output would make
+        # the stack field the logger writes to CloudWatch unreadable.
+        Minify: false
+        Sourcemap: true
 
   PokemonCatalogFunction:
     Type: AWS::Serverless::Function
@@ -171,6 +196,19 @@ Resources:
               Authorizer: CognitoAuthorizer
               AuthorizationScopes:
                 - pokedex/write
+    # As PokemonUsersFunction: esbuild transpiles the handler, the layer
+    # stays external, and tsc does the type checking in `make compile`.
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - catalog.ts
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        Minify: false
+        Sourcemap: true
 
   PokemonPurchaseFunction:
     Type: AWS::Serverless::Function
@@ -203,6 +241,19 @@ Resources:
               Authorizer: CognitoAuthorizer
               AuthorizationScopes:
                 - pokedex/write
+    # As PokemonUsersFunction: esbuild transpiles the handler, the layer
+    # stays external, and tsc does the type checking in `make compile`.
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - purchase.ts
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        Minify: false
+        Sourcemap: true
 
 Outputs:
   ApiUrl:

@@ -1,20 +1,25 @@
-const { randomUUID } = require('node:crypto');
-const {
+import { randomUUID } from 'node:crypto';
+import type { APIGatewayProxyEvent, APIGatewayProxyHandler } from 'aws-lambda';
+import {
   HttpError,
+  cancellationReasons,
   createLogger,
   errorResponse,
   getItem,
+  isErrorNamed,
   jsonResponse,
   normalizeDisplayName,
   parseJsonBody,
   queryAllByGSI,
   rejectUnknownFields,
+  requireEnv,
   requireInteger,
   toNameKey,
   transactWrite,
-} = require('pokedex-utils');
+  type Logger,
+} from 'pokedex-utils';
 
-const TABLE_NAME = process.env.TABLE_NAME;
+const TABLE_NAME = requireEnv('TABLE_NAME');
 
 // A new trainer starts with enough pokecoins to buy something. Defaulting to 0
 // would push the failure to a later "not enough balance" on the purchase route.
@@ -30,12 +35,27 @@ const ALLOWED_CREATE_FIELDS = ['name', 'balance'];
 const PROFILE_OPERATION = 0;
 const RESERVATION_OPERATION = 1;
 
-function reservationPK(nameKey) {
+// The stored profile. Only what is read back: the writes below build the item
+// literally, so the compiler checks those against this on assignment.
+interface UserProfileItem {
+  userId: string;
+  name: string;
+  balance: number;
+  pokemons?: unknown[];
+  createdAt: string;
+}
+
+interface ReservationItem {
+  userId: string;
+  name: string;
+}
+
+function reservationPK(nameKey: string): string {
   return `USERNAME#${nameKey}`;
 }
 
 // One input, two values: the name shown to people and the name used to compare.
-function readName(value) {
+function readName(value: unknown): { displayName: string; nameKey: string } {
   const displayName = normalizeDisplayName(value, 'name', {
     min: NAME_MIN_LENGTH,
     max: NAME_MAX_LENGTH,
@@ -44,7 +64,7 @@ function readName(value) {
   return { displayName, nameKey: toNameKey(displayName) };
 }
 
-function readBalance(value) {
+function readBalance(value: unknown): number {
   if (value === undefined) {
     return STARTING_BALANCE;
   }
@@ -53,7 +73,7 @@ function readBalance(value) {
 }
 
 // nameKey is storage detail, so it is deliberately not exposed.
-function toPublicUser(item) {
+function toPublicUser(item: UserProfileItem) {
   return {
     userId: item.userId,
     name: item.name,
@@ -63,12 +83,12 @@ function toPublicUser(item) {
   };
 }
 
-function nameIsAlreadyTaken(error) {
-  if (error?.name !== 'TransactionCanceledException') {
+function nameIsAlreadyTaken(error: unknown): boolean {
+  if (!isErrorNamed(error, 'TransactionCanceledException')) {
     return false;
   }
 
-  const reasons = error.CancellationReasons || [];
+  const reasons = cancellationReasons(error);
 
   if (reasons[PROFILE_OPERATION]?.Code === 'ConditionalCheckFailed') {
     // The profile key is a freshly generated UUID, so this is not a name
@@ -82,12 +102,17 @@ function nameIsAlreadyTaken(error) {
 async function listUsers() {
   // The reservation items carry no GSI1 keys, and a GSI only holds items that
   // have both of its key attributes, so this query returns profiles only.
-  const items = await queryAllByGSI(TABLE_NAME, 'GSI1', 'GSI1PK', 'ENTITY#USER');
+  const items = await queryAllByGSI<UserProfileItem>(
+    TABLE_NAME,
+    'GSI1',
+    'GSI1PK',
+    'ENTITY#USER',
+  );
 
   return jsonResponse(200, items.map(toPublicUser));
 }
 
-async function createUser(event, log) {
+async function createUser(event: APIGatewayProxyEvent, log: Logger) {
   const body = parseJsonBody(event);
   // Fails loudly on a client still sending the old userId field.
   rejectUnknownFields(body, ALLOWED_CREATE_FIELDS);
@@ -142,7 +167,11 @@ async function createUser(event, log) {
     // Nothing was written, so read the winner to tell the caller which user
     // already holds the name. getItem is a consistent read, so the winner's
     // reservation is guaranteed to be visible here.
-    const existing = await getItem(TABLE_NAME, reservationPK(nameKey), 'RESERVATION');
+    const existing = await getItem<ReservationItem>(
+      TABLE_NAME,
+      reservationPK(nameKey),
+      'RESERVATION',
+    );
 
     log.warn('Rejected a duplicate user name.', { nameKey, existingUserId: existing?.userId });
 
@@ -157,7 +186,7 @@ async function createUser(event, log) {
   return jsonResponse(201, toPublicUser(profile));
 }
 
-exports.handler = async (event, context) => {
+export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'users',
     requestId: context?.awsRequestId,
