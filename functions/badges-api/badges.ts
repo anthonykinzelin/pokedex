@@ -26,6 +26,16 @@ interface BadgeItem {
   taskToken?: string;
 }
 
+// One query on the table's own key: every badge of a user shares the same
+// sort-key prefix, so no index is needed to list them. taskToken is read but
+// never returned - the boolean derived from it says whether the workflow has
+// registered its callback token, which is what makes a decision possible.
+// Without it a client polling tightly would get a 409 from the decision route
+// with no way to tell why, because a badge is briefly PENDING before its task
+// has stored the token. Returning the token itself would hand a bearer
+// credential to every holder of pokedex/read. `level` and `status` are DynamoDB
+// reserved words, hence the expression names, and the numeric sort undoes the
+// string order of the sort key, where BADGE#LEVEL#10 comes before BADGE#LEVEL#2.
 export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'badges-api',
@@ -39,9 +49,6 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
     const badges = await queryAllByPK<BadgeItem>(
       TABLE_NAME,
       `USER#${userId}`,
-      // One query on the table's own key. Every badge of a user shares this
-      // sort-key prefix, which is the reason a single-table design puts related
-      // items under the same partition key: no index needed to list them.
       BADGE_SK_PREFIX,
       {
         ProjectionExpression: [
@@ -55,35 +62,18 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
           'createdAt',
           'decidedAt',
           'decisionReason',
-          // Read, but never returned - see the mapping below. The distinction
-          // matters: reading it inside the function is harmless, returning it
-          // would hand a bearer credential to every holder of pokedex/read.
           'taskToken',
         ].join(', '),
-        // `level` and `status` are both DynamoDB reserved words, so neither can
-        // appear literally in an expression.
         ExpressionAttributeNames: { '#level': 'level', '#status': 'status' },
       },
     );
 
     return jsonResponse(200, {
       userId,
-      // The query returns items in sort-key order, which is a *string* order:
-      // BADGE#LEVEL#10 sorts before BADGE#LEVEL#2. Sorted numerically here so
-      // the response reads in the order the levels were reached.
       badges: badges
         .sort((a, b) => (a.level || 0) - (b.level || 0))
         .map(({ taskToken, ...badge }) => ({
           ...badge,
-          // Whether the workflow has registered its callback token yet, which
-          // is what makes a decision possible. There is a real window where a
-          // badge is PENDING but not yet decidable: the consumer writes the
-          // badge, starts the execution, and only then does the task store its
-          // token. A client that polls tightly would otherwise get a 409 from
-          // the decision route and have no way to tell why.
-          //
-          // The boolean is derived and returned; the token itself is destructured
-          // out and never leaves this function.
           awaitingDecision: badge.status === 'PENDING' && Boolean(taskToken),
         })),
     });

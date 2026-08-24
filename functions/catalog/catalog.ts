@@ -26,7 +26,6 @@ const TYPE_MAX_LENGTH = 30;
 const MAX_PRICE = 1000000;
 const ALLOWED_CREATE_FIELDS = ['name', 'type', 'price'];
 
-// The stored catalog entry, limited to what is read back out.
 interface PokemonItem {
   pokemonId: string;
   name: string;
@@ -37,9 +36,10 @@ interface PokemonItem {
 
 // A Pokemon is a catalog entry, so a slug of its name is a perfectly good
 // identity. That makes the id itself unique, which is why one conditional
-// PutItem is enough here. Contrast users.ts: a user's id is a random UUID and
-// the uniqueness lives on a *different* attribute, so it needs a separate
-// reservation item written inside a transaction.
+// PutItem is enough here - contrast users.ts, whose uniqueness lives on a
+// different attribute than its random UUID key and so needs a reservation item
+// inside a transaction. A name written only in a non-Latin script slugs to
+// nothing and is rejected.
 function readName(value: unknown): { displayName: string; pokemonId: string } {
   const displayName = normalizeDisplayName(value, 'name', {
     min: NAME_MIN_LENGTH,
@@ -47,7 +47,6 @@ function readName(value: unknown): { displayName: string; pokemonId: string } {
   });
   const pokemonId = toSlug(displayName);
 
-  // A name written only in a non-Latin script would slug to nothing.
   if (!pokemonId) {
     throw new ValidationError('name must contain at least one Latin letter or digit.', 'name');
   }
@@ -76,9 +75,11 @@ async function listPokemons() {
   return jsonResponse(200, items.map(toPublicPokemon));
 }
 
+// rejectUnknownFields is what makes a client still sending its own pokemonId
+// fail loudly. Only PK is needed in the condition: a Put supplies the whole
+// primary key, so it is evaluated against the item at that exact key.
 async function createPokemon(event: APIGatewayProxyEvent, log: Logger) {
   const body = parseJsonBody(event);
-  // Fails loudly on a client still sending its own pokemonId.
   rejectUnknownFields(body, ALLOWED_CREATE_FIELDS);
 
   const { displayName, pokemonId } = readName(body.name);
@@ -101,8 +102,6 @@ async function createPokemon(event: APIGatewayProxyEvent, log: Logger) {
         price,
         createdAt,
       },
-      // Only PK is needed: a Put supplies the whole primary key, so the
-      // condition is evaluated against the item at that exact key.
       'attribute_not_exists(PK)',
     );
   } catch (error) {

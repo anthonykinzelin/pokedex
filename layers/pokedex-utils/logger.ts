@@ -1,5 +1,3 @@
-// Structured logging with no dependency. One JSON object per line, so
-// CloudWatch Logs Insights can filter on any field.
 import { asAwsError } from './errors';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -15,9 +13,9 @@ export interface Logger {
 
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
-// LOG_LEVEL is an arbitrary string from the environment, so it is checked
-// against the table instead of being used as a key. An unknown value falls
-// back to info rather than silencing the function.
+// LOG_LEVEL is an arbitrary string from the environment, so it is checked against
+// the table instead of being used as a key. An unknown value falls back to info
+// rather than silencing the function.
 function isLogLevel(value: string): value is LogLevel {
   return value in LEVELS;
 }
@@ -37,6 +35,9 @@ export function serializeError(error: unknown): LogContext {
   };
 }
 
+// One JSON object per line, so CloudWatch Logs Insights can filter on any field.
+// JSON.stringify escapes the newlines inside a stack trace, which is what keeps
+// the record on a single physical line and therefore a single CloudWatch event.
 function write(
   level: LogLevel,
   message: string,
@@ -47,8 +48,6 @@ function write(
     return;
   }
 
-  // JSON.stringify escapes the newlines inside a stack trace, so the record
-  // stays on a single physical line and CloudWatch keeps it as one event.
   const line = JSON.stringify({
     level,
     message,

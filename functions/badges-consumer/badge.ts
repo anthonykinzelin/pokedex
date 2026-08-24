@@ -1,56 +1,30 @@
-import type { SQSBatchItemFailure, SQSHandler, SQSRecord } from 'aws-lambda';
+import type { SQSBatchItemFailure, SQSHandler } from 'aws-lambda';
 import {
+  LEVEL_REACHED,
   badgeForLevel,
   badgeIdFor,
   badgeSortKey,
   createLogger,
   executionNameFor,
   isErrorNamed,
+  parseEvent,
   putItemConditional,
   requireEnv,
-  requireInteger,
-  requireStrings,
   serializeError,
   startExecution,
   type BadgeDefinition,
+  type EventDetail,
   type Logger,
 } from 'pokedex-utils';
 
 const TABLE_NAME = requireEnv('TABLE_NAME');
 const STATE_MACHINE_ARN = requireEnv('STATE_MACHINE_ARN');
 
-interface LevelReached {
-  userId: string;
-  level: number;
-  points: number;
-  reachedAt: string;
-}
+type LevelReached = EventDetail<typeof LEVEL_REACHED>;
 
-// The envelope is checked before the payload. An event from another source, or
-// carrying an eventVersion this code was never written against, will fail the
-// same way on every attempt, so it must go to the DLQ rather than be retried
-// three times first - that is the difference the brief asks for between a
-// permanent failure and a transient one.
-function levelReached(record: SQSRecord): LevelReached {
-  const event = JSON.parse(record.body);
-  const detail = event.detail;
-
-  if (event.source !== 'fr.pokemon.levels'
-    || event['detail-type'] !== 'level.reached'
-    || detail?.eventVersion !== '1.0') {
-    throw new Error('Unsupported level event.');
-  }
-
-  const { userId, reachedAt } = requireStrings(detail, ['userId', 'reachedAt']);
-
-  return {
-    userId,
-    level: requireInteger(detail.level, 'level', { min: 1 }),
-    points: requireInteger(detail.points, 'points'),
-    reachedAt,
-  };
-}
-
+// Creates the badge in PENDING. One badge per user and per level, enforced by
+// the key rather than by a read-then-write, so a redelivered event fails the
+// condition instead of producing a second badge.
 async function createPendingBadge(
   event: LevelReached,
   badge: BadgeDefinition,
@@ -73,9 +47,6 @@ async function createPendingBadge(
         reachedAt: event.reachedAt,
         createdAt: new Date().toISOString(),
       },
-      // One badge per user and per level, enforced by the key rather than by a
-      // read-then-write. A redelivered event lands on the same PK and SK, so
-      // the condition fails and no second badge appears.
       'attribute_not_exists(PK)',
     );
 
@@ -89,10 +60,10 @@ async function createPendingBadge(
   }
 }
 
+// Starts the validation workflow under a deterministic name: Step Functions
+// refuses two executions with the same name, which rules out a duplicate
+// workflow without a lock or a dedupe table.
 async function startValidation(event: LevelReached, log: Logger): Promise<void> {
-  // Deterministic, so this is the second half of the idempotency: Step Functions
-  // refuses two executions with the same name, which rules out a duplicate
-  // workflow without a lock or a dedupe table.
   const name = executionNameFor(event.userId, event.level);
 
   try {
@@ -112,6 +83,10 @@ async function startValidation(event: LevelReached, log: Logger): Promise<void> 
   }
 }
 
+// A level the catalog ignores is a normal outcome, not a failure. Both steps run
+// on every delivery, and are tolerated independently, so a StartExecution that
+// failed after the badge was written is retried instead of leaving the badge
+// PENDING with no workflow behind it.
 export const handler: SQSHandler = async (event, context) => {
   const log = createLogger({
     route: 'badges-consumer',
@@ -123,28 +98,17 @@ export const handler: SQSHandler = async (event, context) => {
     const recordLog = log.child({ messageId: record.messageId });
 
     try {
-      const reached = levelReached(record);
+      const reached = parseEvent(LEVEL_REACHED, record.body);
       const badge = badgeForLevel(reached.level);
 
-      // Not every level is worth a badge, and which ones are is this service's
-      // business alone. A level the catalog ignores is a normal outcome: the
-      // message is acknowledged and nothing is created. Throwing here would
-      // send a perfectly valid event to the DLQ three attempts later.
       if (!badge) {
         recordLog.info('No badge is defined for this level.', { level: reached.level });
         continue;
       }
 
-      // The two steps are tolerated independently, and that is deliberate. If
-      // an existing badge made us skip the second step, a StartExecution that
-      // failed after the badge was written would never be retried, and the
-      // badge would stay PENDING with no workflow behind it forever. Letting
-      // both run on every delivery is what makes the state converge.
       await createPendingBadge(reached, badge, recordLog);
       await startValidation(reached, recordLog);
     } catch (error) {
-      // Reported per message rather than failing the batch, so one bad event
-      // cannot block the others. After three attempts SQS moves it to the DLQ.
       recordLog.error('Could not process level event.', serializeError(error));
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }

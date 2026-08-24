@@ -21,22 +21,15 @@ import {
 
 const TABLE_NAME = requireEnv('TABLE_NAME');
 
-// A new trainer starts with enough pokecoins to buy something. Defaulting to 0
-// would push the failure to a later "not enough balance" on the purchase route.
 const STARTING_BALANCE = 100;
 const MAX_BALANCE = 1000000;
 const NAME_MIN_LENGTH = 2;
-// Long enough for the "Postman Trainer <guid>" the collection sends.
 const NAME_MAX_LENGTH = 60;
 const ALLOWED_CREATE_FIELDS = ['name', 'balance'];
 
-// Both writes travel in one TransactWriteItems call, and CancellationReasons
-// comes back in the same order, so these indexes say which check failed.
 const PROFILE_OPERATION = 0;
 const RESERVATION_OPERATION = 1;
 
-// The stored profile. Only what is read back: the writes below build the item
-// literally, so the compiler checks those against this on assignment.
 interface UserProfileItem {
   userId: string;
   name: string;
@@ -64,6 +57,8 @@ function readName(value: unknown): { displayName: string; nameKey: string } {
   return { displayName, nameKey: toNameKey(displayName) };
 }
 
+// A new trainer starts with enough pokecoins to buy something. Defaulting to 0
+// would push the failure to a later "not enough balance" on the purchase route.
 function readBalance(value: unknown): number {
   if (value === undefined) {
     return STARTING_BALANCE;
@@ -83,6 +78,10 @@ function toPublicUser(item: UserProfileItem) {
   };
 }
 
+// Both writes travel in one TransactWriteItems call and CancellationReasons comes
+// back in the same order, so the indexes say which check failed. A failure on the
+// profile key is not a name clash - that key is a freshly generated UUID - so it
+// surfaces as a 500 rather than blaming the caller's name.
 function nameIsAlreadyTaken(error: unknown): boolean {
   if (!isErrorNamed(error, 'TransactionCanceledException')) {
     return false;
@@ -91,17 +90,15 @@ function nameIsAlreadyTaken(error: unknown): boolean {
   const reasons = cancellationReasons(error);
 
   if (reasons[PROFILE_OPERATION]?.Code === 'ConditionalCheckFailed') {
-    // The profile key is a freshly generated UUID, so this is not a name
-    // clash. Let it surface as a 500 rather than blaming the caller's name.
     return false;
   }
 
   return reasons[RESERVATION_OPERATION]?.Code === 'ConditionalCheckFailed';
 }
 
+// The reservation items carry no GSI1 keys, and a GSI only holds items that have
+// both of its key attributes, so this query returns profiles only.
 async function listUsers() {
-  // The reservation items carry no GSI1 keys, and a GSI only holds items that
-  // have both of its key attributes, so this query returns profiles only.
   const items = await queryAllByGSI<UserProfileItem>(
     TABLE_NAME,
     'GSI1',
@@ -112,16 +109,18 @@ async function listUsers() {
   return jsonResponse(200, items.map(toPublicUser));
 }
 
+// Both items are written in one transaction, so two concurrent requests for the
+// same name cannot both win: the loser's condition fails and its profile is
+// rolled back too, leaving no orphan USER# item behind. The token identifies the
+// calling application rather than a person, so the server owns the identity of
+// the user it creates.
 async function createUser(event: APIGatewayProxyEvent, log: Logger) {
   const body = parseJsonBody(event);
-  // Fails loudly on a client still sending the old userId field.
   rejectUnknownFields(body, ALLOWED_CREATE_FIELDS);
 
   const { displayName, nameKey } = readName(body.name);
   const balance = readBalance(body.balance);
 
-  // The token identifies the calling application, not a person, so the server
-  // owns the identity of the user it creates.
   const userId = randomUUID();
   const createdAt = new Date().toISOString();
 
@@ -142,8 +141,6 @@ async function createUser(event: APIGatewayProxyEvent, log: Logger) {
   const reservation = {
     PK: reservationPK(nameKey),
     SK: 'RESERVATION',
-    // No GSI1PK/GSI1SK on purpose: without both index keys this item is absent
-    // from GSI1, so it can never show up in GET /users.
     entity: 'USERNAME_RESERVATION',
     nameKey,
     name: displayName,
@@ -152,9 +149,6 @@ async function createUser(event: APIGatewayProxyEvent, log: Logger) {
   };
 
   try {
-    // One transaction, so two concurrent requests for the same name cannot
-    // both win. The loser's condition fails and its profile is rolled back
-    // too, which leaves no orphan USER# item behind.
     await transactWrite(TABLE_NAME, [
       { Put: { Item: profile, ConditionExpression: 'attribute_not_exists(PK)' } },
       { Put: { Item: reservation, ConditionExpression: 'attribute_not_exists(PK)' } },
@@ -164,9 +158,6 @@ async function createUser(event: APIGatewayProxyEvent, log: Logger) {
       throw error;
     }
 
-    // Nothing was written, so read the winner to tell the caller which user
-    // already holds the name. getItem is a consistent read, so the winner's
-    // reservation is guaranteed to be visible here.
     const existing = await getItem<ReservationItem>(
       TABLE_NAME,
       reservationPK(nameKey),
@@ -186,6 +177,8 @@ async function createUser(event: APIGatewayProxyEvent, log: Logger) {
   return jsonResponse(201, toPublicUser(profile));
 }
 
+// Every route is awaited inside the try, so a rejection becomes a JSON error
+// rather than escaping and turning into a bare 502.
 export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'users',
@@ -195,8 +188,6 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
 
   try {
     if (event.httpMethod === 'GET') {
-      // Awaited inside the try, so a rejection becomes a JSON error rather
-      // than escaping and turning into a bare 502.
       return await listUsers();
     }
     if (event.httpMethod === 'POST') {

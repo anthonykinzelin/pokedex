@@ -18,6 +18,8 @@ export interface StringOptions {
   max?: number;
 }
 
+// Length is counted in code points, not UTF-16 units: String.length counts a
+// surrogate pair twice.
 export function requireString(
   value: unknown,
   field: string,
@@ -28,7 +30,6 @@ export function requireString(
   }
 
   const trimmed = value.trim();
-  // Code points, not UTF-16 units: String.length counts a surrogate pair twice.
   const length = Array.from(trimmed).length;
 
   if (length < min) {

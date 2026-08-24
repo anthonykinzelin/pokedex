@@ -11,9 +11,6 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { documentClient } from './aws';
 
-// What DynamoDB hands back before a caller decides what it is. Every read is
-// generic over this, so a handler can name the shape it expects instead of
-// indexing an untyped object.
 export type Item = Record<string, unknown>;
 
 export async function getItem<T = Item>(
@@ -61,9 +58,8 @@ export function putItemConditional(
 export type UpdateOptions = Omit<UpdateCommandInput, 'TableName' | 'Key'>;
 
 // The key is spelled out and the rest passed through, so a caller can still
-// reach ReturnValues or ConditionExpression. Worth remembering when reading the
-// callers: unlike TransactWriteItems, a plain UpdateItem *can* return the
-// values it just wrote, through ReturnValues.
+// reach ReturnValues or ConditionExpression. Unlike TransactWriteItems, a plain
+// UpdateItem can return the values it just wrote.
 export function updateItem(
   tableName: string,
   PK: string,
@@ -104,6 +100,9 @@ async function queryAllPages<T>(
   return items;
 }
 
+// ExpressionAttributeValues is merged rather than spread over: a caller passing
+// its own, as any FilterExpression must, would otherwise wipe out
+// :partitionValue and the query would fail.
 export function queryAllByGSI<T = Item>(
   tableName: string,
   indexName: string,
@@ -111,9 +110,6 @@ export function queryAllByGSI<T = Item>(
   partitionValue: string | number,
   options: QueryOptions = {},
 ): Promise<T[]> {
-  // Merged rather than spread over: a caller passing its own
-  // ExpressionAttributeValues, as any FilterExpression must, would otherwise
-  // wipe out :partitionValue and the query would fail.
   const { ExpressionAttributeValues, ...restOptions } = options;
 
   return queryAllPages<T>({
@@ -157,19 +153,16 @@ export function queryAllByPK<T = Item>(
 
 type TransactItem = NonNullable<TransactWriteCommandInput['TransactItems']>[number];
 
-// One operation - Put, Update, Delete or ConditionCheck - minus the TableName,
-// which transactWrite supplies. Mapping over the SDK's own type is what makes
-// a typo in UpdateExpression or a misspelled ExpressionAttributeNames fail at
-// compile time instead of at runtime.
 export type TransactOperation = {
   [K in keyof TransactItem]?: Omit<NonNullable<TransactItem[K]>, 'TableName'>;
 };
 
-// All operations are sent to one table. A cross-table transaction would need a
-// TableName per operation. The DynamoDB error to know here is
-// TransactionCanceledException: its CancellationReasons array lines up
-// positionally with the operations passed in, which is how a caller can tell
-// which condition failed.
+// All operations are sent to one table; a cross-table transaction would need a
+// TableName per operation. Mapping over the SDK's own operation type is what
+// makes a typo in UpdateExpression fail at compile time. On failure,
+// TransactionCanceledException carries a CancellationReasons array that lines up
+// positionally with the operations passed in, so a caller can tell which
+// condition failed.
 export function transactWrite(tableName: string, operations: TransactOperation[]) {
   const TransactItems = operations.map((operation) => {
     const [operationName] = Object.keys(operation) as (keyof TransactOperation)[];

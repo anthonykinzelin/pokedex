@@ -2,14 +2,16 @@ import {
   EventBridgeClient,
   PutEventsCommand,
 } from '@aws-sdk/client-eventbridge';
+import type { EventDefinition } from './schemas';
 
 const eventBridgeClient = new EventBridgeClient({});
 
-export async function publishEvent(
+// The detail is parsed against the event definition before it goes out, so a
+// payload that no consumer could accept never reaches the bus.
+export async function publishEvent<D>(
   eventBusName: string | undefined,
-  source: string,
-  detailType: string,
-  detail: unknown,
+  event: EventDefinition<D>,
+  detail: D,
 ): Promise<void> {
   if (!eventBusName) {
     throw new Error('EVENT_BUS_NAME is not configured.');
@@ -19,9 +21,9 @@ export async function publishEvent(
     Entries: [
       {
         EventBusName: eventBusName,
-        Source: source,
-        DetailType: detailType,
-        Detail: JSON.stringify(detail),
+        Source: event.source,
+        DetailType: event.detailType,
+        Detail: JSON.stringify(event.detail.parse(detail)),
       },
     ],
   }));
@@ -32,4 +34,14 @@ export async function publishEvent(
     const errorMessage = failure?.ErrorMessage ? ` - ${failure.ErrorMessage}` : '';
     throw new Error(`EventBridge rejected the event: ${errorCode}${errorMessage}`);
   }
+}
+
+// Envelope first, then payload. An event from another source, or carrying an
+// eventVersion this code was never written against, fails the same way on every
+// attempt, so it belongs in the DLQ rather than in three retries first.
+export function parseEvent<D>(
+  event: EventDefinition<D>,
+  body: string,
+): D {
+  return event.envelope.parse(JSON.parse(body)).detail;
 }

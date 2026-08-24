@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { APIGatewayProxyHandler } from 'aws-lambda';
 import {
   HttpError,
+  PURCHASE_COMPLETED,
   cancellationReasons,
   createLogger,
   errorResponse,
@@ -17,15 +18,8 @@ import {
 } from 'pokedex-utils';
 
 const TABLE_NAME = requireEnv('TABLE_NAME');
-// Read at module load rather than left to publishEvent's own guard. That guard
-// throws inside the try below, which is deliberately swallowed so a Levels
-// outage cannot fail a committed purchase - but it would swallow a missing
-// variable too, and purchases would succeed while no event was ever published.
-// A misconfigured deploy is not an outage, so it fails here instead, loudly.
 const EVENT_BUS_NAME = requireEnv('EVENT_BUS_NAME');
 
-// The balance update is operation 0 and the purchase Put is operation 1, so
-// CancellationReasons lines up with these indexes.
 const BALANCE_OPERATION = 0;
 
 interface UserItem {
@@ -38,6 +32,14 @@ interface PokemonItem {
   price: number;
 }
 
+// The bus name is read at module load rather than left to publishEvent's own
+// guard, because that guard throws inside the try below, which is deliberately
+// swallowed so a Levels outage cannot fail a committed purchase - a misconfigured
+// deploy is not an outage and must fail loudly instead. userId stays an opaque
+// path value: the identity scheme is the referential's business, and an unknown
+// id already 404s. CancellationReasons lines up with the two operations, index 0
+// being the balance update - the only one that can fail for a reason the caller
+// can act on.
 export const handler: APIGatewayProxyHandler = async (event, context) => {
   const log = createLogger({
     route: 'purchase',
@@ -46,9 +48,6 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
   });
 
   try {
-    // The userId stays an opaque path value. It is deliberately not checked
-    // against a UUID shape: the identity scheme is the referential's business,
-    // not the transport's, and an unknown id already 404s below.
     const userId = requireString(event.pathParameters?.userId, 'userId');
 
     const { pokemonId } = parseJsonBody(event);
@@ -110,29 +109,20 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
             amount: price,
             createdAt,
           },
-          // A Put supplies the whole primary key, so testing PK alone
-          // already means "no item at this exact PK and SK".
           ConditionExpression: 'attribute_not_exists(PK)',
         },
       },
     ]);
 
     try {
-      await publishEvent(
-        EVENT_BUS_NAME,
-        'fr.pokemon.referential',
-        'purchase.completed',
-        {
-          eventVersion: '1.0',
-          purchaseId,
-          userId,
-          pokemonId: normalizedPokemonId,
-          occurredAt: createdAt,
-        },
-      );
+      await publishEvent(EVENT_BUS_NAME, PURCHASE_COMPLETED, {
+        eventVersion: '1.0',
+        purchaseId,
+        userId,
+        pokemonId: normalizedPokemonId,
+        occurredAt: createdAt,
+      });
     } catch (eventError) {
-      // Deliberately swallowed: the purchase is already committed and the
-      // brief requires it to succeed even when the Levels service is gone.
       log.error('The purchase was saved but its event could not be published.', {
         purchaseId,
         ...serializeError(eventError),
@@ -147,9 +137,6 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
       createdAt,
     });
   } catch (error) {
-    // CancellationReasons lines up with the operations above: index 0 is the
-    // balance update, index 1 is the purchase Put. Only the first can fail for
-    // a reason the caller can act on.
     if (isErrorNamed(error, 'TransactionCanceledException')) {
       const reasons = cancellationReasons(error);
 

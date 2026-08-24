@@ -2,11 +2,11 @@ import type { APIGatewayProxyResult } from 'aws-lambda';
 import { isErrorNamed } from './errors';
 import { logger, serializeError, type Logger } from './logger';
 
+// `details` is merged into the response body, for example the userId that
+// already owns a name in a 409.
 export class HttpError extends Error {
   statusCode: number;
 
-  // Extra fields merged into the response body, for example the userId that
-  // already owns a name in a 409.
   details?: Record<string, unknown>;
 
   constructor(statusCode: number, message: string, details?: Record<string, unknown>) {
@@ -33,14 +33,13 @@ export function jsonResponse(
   };
 }
 
-// Only the two fields the parse actually needs, rather than the whole
-// APIGatewayProxyEvent. An API Gateway event satisfies this structurally, and
-// so does the partial object a test hands in.
 export interface JsonBodyEvent {
   body?: string | null;
   isBase64Encoded?: boolean;
 }
 
+// Only JSON.parse sits inside the try: a wider try would relabel every error
+// thrown below it as "invalid JSON", including a genuine bug.
 export function parseJsonBody<T = Record<string, unknown>>(event: JsonBodyEvent): T {
   if (!event.body) {
     throw new HttpError(400, 'A JSON request body is required.');
@@ -52,8 +51,6 @@ export function parseJsonBody<T = Record<string, unknown>>(event: JsonBodyEvent)
 
   let body: unknown;
   try {
-    // Only JSON.parse belongs inside the try. A wider try would relabel every
-    // error thrown below it as "invalid JSON", including a genuine bug.
     body = JSON.parse(rawBody);
   } catch {
     throw new HttpError(400, 'The request body must be valid JSON.');
@@ -66,8 +63,10 @@ export function parseJsonBody<T = Record<string, unknown>>(event: JsonBodyEvent)
   return body as T;
 }
 
-// The single place where an error becomes a response, so every error body in
-// the API has the same shape.
+// The single place where an error becomes a response, so every error body in the
+// API has the same shape. ConditionalCheckFailedException is what a conditional
+// PutItem raises, unlike a cancelled transaction which raises
+// TransactionCanceledException.
 export function errorResponse(error: unknown, log: Logger = logger): APIGatewayProxyResult {
   if (error instanceof HttpError) {
     if (error.statusCode >= 500) {
@@ -79,8 +78,6 @@ export function errorResponse(error: unknown, log: Logger = logger): APIGatewayP
     return jsonResponse(error.statusCode, { message: error.message, ...error.details });
   }
 
-  // Raised by a conditional PutItem, unlike a cancelled transaction which
-  // raises TransactionCanceledException.
   if (isErrorNamed(error, 'ConditionalCheckFailedException')) {
     log.warn('Conditional write failed.', serializeError(error));
     return jsonResponse(409, { message: 'The resource already exists.' });
