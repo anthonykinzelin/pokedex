@@ -263,6 +263,7 @@
               "  pm.expect(pokemon.pokemonId).to.eql(pokemon.pokemonId.toLowerCase());",
               "  pm.expect(pokemon.pokemonId).to.not.include(' ');",
               "  pm.collectionVariables.set('pokemon_id', pokemon.pokemonId);",
+              "  pm.collectionVariables.set('pokemon_price', pokemon.price);",
               "  if (pm.environment.name) pm.environment.set('pokemon_id', pokemon.pokemonId);",
               "});"
             ]
@@ -391,7 +392,7 @@
               "  pm.expect(user).to.be.an('object');",
               "  pm.expect(user.pokemons).to.be.an('array');",
               "  pm.expect(user.pokemons.some(p => p.pokemonId === pm.collectionVariables.get('pokemon_id'))).to.be.true;",
-              "  pm.expect(user.balance).to.eql(75);",
+              "  pm.expect(user.balance).to.eql(1000 - Number(pm.collectionVariables.get('pokemon_price')));",
               "});"
             ]
           }
