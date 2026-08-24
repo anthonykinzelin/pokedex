@@ -28,6 +28,14 @@
     {
       "key": "pokemon_name",
       "value": ""
+    },
+    {
+      "key": "badge_id",
+      "value": ""
+    },
+    {
+      "key": "badge_id_2",
+      "value": ""
     }
   ],
   "item": [
@@ -113,7 +121,7 @@
         "url": "{{api_base_url}}/users",
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"name\": \"{{user_name}}\",\n  \"balance\": 100\n}"
+          "raw": "{\n  \"name\": \"{{user_name}}\",\n  \"balance\": 1000\n}"
         }
       },
       "event": [
@@ -129,7 +137,7 @@
               "    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,",
               "  );",
               "  pm.expect(user.name).to.eql(pm.collectionVariables.get('user_name'));",
-              "  pm.expect(user.balance).to.eql(100);",
+              "  pm.expect(user.balance).to.eql(1000);",
               "  pm.expect(user.pokemons).to.be.an('array').that.is.empty;",
               "  pm.collectionVariables.set('user_id', user.userId);",
               "  if (pm.environment.name) pm.environment.set('user_id', user.userId);",
@@ -239,7 +247,7 @@
         "url": "{{api_base_url}}/pokemons",
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"name\": \"{{pokemon_name}}\",\n  \"type\": \"electric\",\n  \"price\": 25\n}"
+          "raw": "{\n  \"name\": \"{{pokemon_name}}\",\n  \"type\": \"electric\",\n  \"price\": 10\n}"
         }
       },
       "event": [
@@ -322,7 +330,7 @@
       ]
     },
     {
-      "name": "8 - Purchase Pokemon",
+      "name": "8 - Purchase Pokemon (1 of 4)",
       "request": {
         "method": "POST",
         "header": [
@@ -346,6 +354,7 @@
           "listen": "test",
           "script": {
             "exec": [
+              "// 50 points per purchase, so this one alone does not reach a level.",
               "pm.test('purchase created', function () {",
               "  pm.response.to.have.status(201);",
               "  const purchase = pm.response.json();",
@@ -390,7 +399,44 @@
       ]
     },
     {
-      "name": "10 - Get user level",
+      "name": "10 - Purchase Pokemon (2 of 4)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_base_url}}/users/{{user_id}}/purchases",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Two purchases are 100 points, which is level 1.",
+              "pm.test('purchase created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  const purchase = pm.response.json();",
+              "  pm.expect(purchase).to.have.property('purchaseId');",
+              "  pm.expect(purchase.userId).to.eql(pm.collectionVariables.get('user_id'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 - Get user level",
       "request": {
         "method": "GET",
         "header": [
@@ -403,25 +449,505 @@
       },
       "event": [
         {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Postman offers no non-blocking sleep, so this blocks the sandbox on",
+              "// purpose. Retrying with no pause at all would spend every attempt inside",
+              "// the first second, while the event is still in flight.",
+              "const until = Date.now() + 1000;",
+              "while (Date.now() < until) { /* deliberate wait */ }"
+            ]
+          }
+        },
+        {
           "listen": "test",
           "script": {
             "exec": [
-              "// The purchase reaches Levels through EventBridge and SQS, so the level",
-              "// is not there the instant the purchase returns. Poll a few times.",
+              "// The purchase reaches Levels through EventBridge and SQS, so the",
+              "// level is not there the instant the purchase returns.",
               "const attempts = Number(pm.collectionVariables.get('level_poll_attempts') || 0);",
               "const response = pm.response.code === 200 ? pm.response.json() : {};",
-              "const levelIsReady = response.points >= 100 && response.level >= 1;",
-              "if (!levelIsReady && attempts < 5) {",
+              "const ready = response.points >= 100 && response.level >= 1;",
+              "",
+              "if (!ready && attempts < 15) {",
               "  pm.collectionVariables.set('level_poll_attempts', attempts + 1);",
               "  pm.execution.setNextRequest(pm.info.requestName);",
               "} else {",
               "  pm.collectionVariables.unset('level_poll_attempts');",
-              "  pm.test('the level reflects the purchase', function () {",
+              "  pm.test('two purchases add up to level 1', function () {",
               "    pm.response.to.have.status(200);",
               "    pm.expect(response.userId).to.eql(pm.collectionVariables.get('user_id'));",
-              "    pm.expect(response.points).to.be.at.least(100);",
-              "    pm.expect(response.level).to.be.at.least(1);",
+              "    // 50 points per purchase, one level per 100 points.",
+              "    pm.expect(response.points).to.eql(100);",
+              "    pm.expect(response.level).to.eql(1);",
+              "    // The watermark: the highest level Badges has been told about.",
+              "    pm.expect(response.publishedLevel).to.eql(1);",
               "    pm.expect(response.updatedAt).to.be.a('string').and.not.empty;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 - The level 1 badge is pending",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Postman offers no non-blocking sleep, so this blocks the sandbox on",
+              "// purpose. Retrying with no pause at all would spend every attempt inside",
+              "// the first second, while the event is still in flight.",
+              "const until = Date.now() + 1000;",
+              "while (Date.now() < until) { /* deliberate wait */ }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Levels published level.reached, Badges created the badge and started the workflow, which is now paused on RegisterDecision.",
+              "const counter = 'poll_badge_id';",
+              "const attempts = Number(pm.collectionVariables.get(counter) || 0);",
+              "const body = pm.response.code === 200 ? pm.response.json() : { badges: [] };",
+              "const badge = (body.badges || []).find((b) => b.level === 1);",
+              "const ready = badge && badge.status === 'PENDING' && badge.awaitingDecision;",
+              "",
+              "if (!ready && attempts < 15) {",
+              "  pm.collectionVariables.set(counter, attempts + 1);",
+              "  pm.execution.setNextRequest(pm.info.requestName);",
+              "} else {",
+              "  pm.collectionVariables.unset(counter);",
+              "  pm.test('the level 1 badge is PENDING', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(badge, 'no badge for level 1 after 15 attempts').to.be.an('object');",
+              "    pm.expect(badge.status).to.eql('PENDING');",
+              "    pm.expect(badge.badgeId).to.eql('lvl-1');",
+              "    pm.expect(badge.badgeCode).to.be.a('string').and.not.empty;",
+              "    // PENDING alone is not enough: RegisterDecision has to have stored",
+              "    // its token before the decision route will accept anything.",
+              "    pm.expect(badge.awaitingDecision).to.eql(true);",
+              "    // taskToken must never be exposed on a read route: whoever holds",
+              "    // it can resume the execution and decide in place of the human.",
+              "    pm.expect(badge).to.not.have.property('taskToken');",
+              "    pm.collectionVariables.set('badge_id', badge.badgeId);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "13 - Reject an invalid decision",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges/{{badge_id}}/decision",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"decision\": \"MAYBE\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('an unknown verdict is rejected before the workflow is touched', function () {",
+              "  pm.response.to.have.status(400);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.field).to.eql('decision');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "14 - Grant the level 1 badge",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges/{{badge_id}}/decision",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"decision\": \"GRANTED\",\n  \"reason\": \"Well earned.\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('the decision is accepted, not applied', function () {",
+              "  // 202 and not 200: SendTaskSuccess has resumed the execution, but it is",
+              "  // the state machine that writes the new status, a moment later.",
+              "  pm.response.to.have.status(202);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.decision).to.eql('GRANTED');",
+              "  pm.expect(body.badgeId).to.eql(pm.collectionVariables.get('badge_id'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "15 - The level 1 badge is granted",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Postman offers no non-blocking sleep, so this blocks the sandbox on",
+              "// purpose. Retrying with no pause at all would spend every attempt inside",
+              "// the first second, while the event is still in flight.",
+              "const until = Date.now() + 1000;",
+              "while (Date.now() < until) { /* deliberate wait */ }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// The Choice state routed to GrantBadge, which wrote the status with a native DynamoDB integration - no Lambda involved.",
+              "const counter = 'poll_badge_id';",
+              "const attempts = Number(pm.collectionVariables.get(counter) || 0);",
+              "const body = pm.response.code === 200 ? pm.response.json() : { badges: [] };",
+              "const badge = (body.badges || []).find((b) => b.level === 1);",
+              "const ready = badge && badge.status === 'GRANTED';",
+              "",
+              "if (!ready && attempts < 15) {",
+              "  pm.collectionVariables.set(counter, attempts + 1);",
+              "  pm.execution.setNextRequest(pm.info.requestName);",
+              "} else {",
+              "  pm.collectionVariables.unset(counter);",
+              "  pm.test('the level 1 badge is GRANTED', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(badge, 'no badge for level 1 after 15 attempts').to.be.an('object');",
+              "    pm.expect(badge.status).to.eql('GRANTED');",
+              "    pm.expect(badge.badgeId).to.eql('lvl-1');",
+              "    pm.expect(badge.badgeCode).to.be.a('string').and.not.empty;",
+              "    // The terminal states end with REMOVE taskToken, so a settled badge",
+              "    // no longer carries a usable callback token.",
+              "    pm.expect(badge.awaitingDecision).to.eql(false);",
+              "    pm.expect(badge.decidedAt).to.be.a('string').and.not.empty;",
+              "    // taskToken must never be exposed on a read route: whoever holds",
+              "    // it can resume the execution and decide in place of the human.",
+              "    pm.expect(badge).to.not.have.property('taskToken');",
+              "    pm.collectionVariables.set('badge_id', badge.badgeId);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "16 - Decide the same badge twice",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges/{{badge_id}}/decision",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"decision\": \"REFUSED\",\n  \"reason\": \"Changed my mind.\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('a second decision is a conflict, not a crash', function () {",
+              "  // The token is no longer waiting, so SendTaskSuccess raises TaskTimedOut.",
+              "  // Two people deciding at once is a normal race, not a malfunction.",
+              "  pm.response.to.have.status(409);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "17 - Purchase Pokemon (3 of 4)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_base_url}}/users/{{user_id}}/purchases",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Still level 1: 150 points has not reached the next threshold.",
+              "pm.test('purchase created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  const purchase = pm.response.json();",
+              "  pm.expect(purchase).to.have.property('purchaseId');",
+              "  pm.expect(purchase.userId).to.eql(pm.collectionVariables.get('user_id'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "18 - Purchase Pokemon (4 of 4)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_base_url}}/users/{{user_id}}/purchases",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pokemonId\": \"{{pokemon_id}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Four purchases are 200 points, which is level 2.",
+              "pm.test('purchase created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  const purchase = pm.response.json();",
+              "  pm.expect(purchase).to.have.property('purchaseId');",
+              "  pm.expect(purchase.userId).to.eql(pm.collectionVariables.get('user_id'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "19 - The level 2 badge is pending",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Postman offers no non-blocking sleep, so this blocks the sandbox on",
+              "// purpose. Retrying with no pause at all would spend every attempt inside",
+              "// the first second, while the event is still in flight.",
+              "const until = Date.now() + 1000;",
+              "while (Date.now() < until) { /* deliberate wait */ }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// A second level, a second badge, a second execution - the execution name carries the level, so the two never collide.",
+              "const counter = 'poll_badge_id_2';",
+              "const attempts = Number(pm.collectionVariables.get(counter) || 0);",
+              "const body = pm.response.code === 200 ? pm.response.json() : { badges: [] };",
+              "const badge = (body.badges || []).find((b) => b.level === 2);",
+              "const ready = badge && badge.status === 'PENDING' && badge.awaitingDecision;",
+              "",
+              "if (!ready && attempts < 15) {",
+              "  pm.collectionVariables.set(counter, attempts + 1);",
+              "  pm.execution.setNextRequest(pm.info.requestName);",
+              "} else {",
+              "  pm.collectionVariables.unset(counter);",
+              "  pm.test('the level 2 badge is PENDING', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(badge, 'no badge for level 2 after 15 attempts').to.be.an('object');",
+              "    pm.expect(badge.status).to.eql('PENDING');",
+              "    pm.expect(badge.badgeId).to.eql('lvl-2');",
+              "    pm.expect(badge.badgeCode).to.be.a('string').and.not.empty;",
+              "    // PENDING alone is not enough: RegisterDecision has to have stored",
+              "    // its token before the decision route will accept anything.",
+              "    pm.expect(badge.awaitingDecision).to.eql(true);",
+              "    // taskToken must never be exposed on a read route: whoever holds",
+              "    // it can resume the execution and decide in place of the human.",
+              "    pm.expect(badge).to.not.have.property('taskToken');",
+              "    pm.collectionVariables.set('badge_id_2', badge.badgeId);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "20 - Refuse the level 2 badge",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges/{{badge_id_2}}/decision",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"decision\": \"REFUSED\",\n  \"reason\": \"Not this time.\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('a refusal is accepted the same way as a grant', function () {",
+              "  // A refusal travels through SendTaskSuccess with the verdict in the",
+              "  // payload, never through SendTaskFailure. It is a result, not an error.",
+              "  pm.response.to.have.status(202);",
+              "  pm.expect(pm.response.json().decision).to.eql('REFUSED');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "21 - The level 2 badge is refused",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": "{{badges_api_base_url}}/users/{{user_id}}/badges"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Postman offers no non-blocking sleep, so this blocks the sandbox on",
+              "// purpose. Retrying with no pause at all would spend every attempt inside",
+              "// the first second, while the event is still in flight.",
+              "const until = Date.now() + 1000;",
+              "while (Date.now() < until) { /* deliberate wait */ }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// The same Choice state, the other branch.",
+              "const counter = 'poll_badge_id_2';",
+              "const attempts = Number(pm.collectionVariables.get(counter) || 0);",
+              "const body = pm.response.code === 200 ? pm.response.json() : { badges: [] };",
+              "const badge = (body.badges || []).find((b) => b.level === 2);",
+              "const ready = badge && badge.status === 'REFUSED';",
+              "",
+              "if (!ready && attempts < 15) {",
+              "  pm.collectionVariables.set(counter, attempts + 1);",
+              "  pm.execution.setNextRequest(pm.info.requestName);",
+              "} else {",
+              "  pm.collectionVariables.unset(counter);",
+              "  pm.test('the level 2 badge is REFUSED', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(badge, 'no badge for level 2 after 15 attempts').to.be.an('object');",
+              "    pm.expect(badge.status).to.eql('REFUSED');",
+              "    pm.expect(badge.badgeId).to.eql('lvl-2');",
+              "    pm.expect(badge.badgeCode).to.be.a('string').and.not.empty;",
+              "    // The terminal states end with REMOVE taskToken, so a settled badge",
+              "    // no longer carries a usable callback token.",
+              "    pm.expect(badge.awaitingDecision).to.eql(false);",
+              "    pm.expect(badge.decidedAt).to.be.a('string').and.not.empty;",
+              "    // taskToken must never be exposed on a read route: whoever holds",
+              "    // it can resume the execution and decide in place of the human.",
+              "    pm.expect(badge).to.not.have.property('taskToken');",
+              "    pm.collectionVariables.set('badge_id_2', badge.badgeId);",
               "  });",
               "}"
             ]

@@ -3,9 +3,11 @@ import {
   PutCommand,
   QueryCommand,
   TransactWriteCommand,
+  UpdateCommand,
   type PutCommandInput,
   type QueryCommandInput,
   type TransactWriteCommandInput,
+  type UpdateCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 import { documentClient } from './aws';
 
@@ -56,35 +58,42 @@ export function putItemConditional(
   return putItem(tableName, item, options);
 }
 
+export type UpdateOptions = Omit<UpdateCommandInput, 'TableName' | 'Key'>;
+
+// The key is spelled out and the rest passed through, so a caller can still
+// reach ReturnValues or ConditionExpression. Worth remembering when reading the
+// callers: unlike TransactWriteItems, a plain UpdateItem *can* return the
+// values it just wrote, through ReturnValues.
+export function updateItem(
+  tableName: string,
+  PK: string,
+  SK: string,
+  options: UpdateOptions,
+) {
+  return documentClient.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { PK, SK },
+    ...options,
+  }));
+}
+
 export type QueryOptions = Omit<
   QueryCommandInput,
   'TableName' | 'IndexName' | 'KeyConditionExpression' | 'ExclusiveStartKey'
 >;
 
-export async function queryAllByGSI<T = Item>(
-  tableName: string,
-  indexName: string,
-  partitionKey: string,
-  partitionValue: string | number,
-  options: QueryOptions = {},
+// DynamoDB pages every query at 1 MB, whether or not a Limit was asked for, so
+// a single send() can return a partial answer with no error. Both public query
+// helpers go through here rather than each carrying its own loop.
+async function queryAllPages<T>(
+  input: Omit<QueryCommandInput, 'ExclusiveStartKey'>,
 ): Promise<T[]> {
   const items: T[] = [];
   let exclusiveStartKey: Record<string, unknown> | undefined;
-  // Merged rather than spread over: a caller passing its own
-  // ExpressionAttributeValues, as any FilterExpression must, would otherwise
-  // wipe out :partitionValue and the query would fail.
-  const { ExpressionAttributeValues, ...restOptions } = options;
 
   do {
     const result = await documentClient.send(new QueryCommand({
-      TableName: tableName,
-      IndexName: indexName,
-      KeyConditionExpression: `${partitionKey} = :partitionValue`,
-      ...restOptions,
-      ExpressionAttributeValues: {
-        ':partitionValue': partitionValue,
-        ...ExpressionAttributeValues,
-      },
+      ...input,
       ExclusiveStartKey: exclusiveStartKey,
     }));
 
@@ -93,6 +102,57 @@ export async function queryAllByGSI<T = Item>(
   } while (exclusiveStartKey);
 
   return items;
+}
+
+export function queryAllByGSI<T = Item>(
+  tableName: string,
+  indexName: string,
+  partitionKey: string,
+  partitionValue: string | number,
+  options: QueryOptions = {},
+): Promise<T[]> {
+  // Merged rather than spread over: a caller passing its own
+  // ExpressionAttributeValues, as any FilterExpression must, would otherwise
+  // wipe out :partitionValue and the query would fail.
+  const { ExpressionAttributeValues, ...restOptions } = options;
+
+  return queryAllPages<T>({
+    TableName: tableName,
+    IndexName: indexName,
+    KeyConditionExpression: `${partitionKey} = :partitionValue`,
+    ...restOptions,
+    ExpressionAttributeValues: {
+      ':partitionValue': partitionValue,
+      ...ExpressionAttributeValues,
+    },
+  });
+}
+
+// A query on the table's own key, with an optional sort-key prefix. This is
+// what makes one item collection - a user and everything hanging off them -
+// readable in one call, and it is the reason a single-table design puts related
+// items under the same PK in the first place.
+export function queryAllByPK<T = Item>(
+  tableName: string,
+  partitionValue: string,
+  skPrefix?: string,
+  options: QueryOptions = {},
+): Promise<T[]> {
+  const { ExpressionAttributeValues, ...restOptions } = options;
+  const values: Record<string, unknown> = { ':pk': partitionValue };
+  let keyCondition = 'PK = :pk';
+
+  if (skPrefix) {
+    keyCondition += ' AND begins_with(SK, :skPrefix)';
+    values[':skPrefix'] = skPrefix;
+  }
+
+  return queryAllPages<T>({
+    TableName: tableName,
+    KeyConditionExpression: keyCondition,
+    ...restOptions,
+    ExpressionAttributeValues: { ...values, ...ExpressionAttributeValues },
+  });
 }
 
 type TransactItem = NonNullable<TransactWriteCommandInput['TransactItems']>[number];

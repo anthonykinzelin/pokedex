@@ -1,0 +1,396 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Pokedex Badges service (EventBridge, SQS, Step Functions, Lambda, API and DynamoDB).
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[a-z0-9-]+$'
+  UtilsLayerArn:
+    Type: String
+    Description: >-
+      Versioned ARN of the shared pokedex-utils layer, read from
+      /pokedex/<Env>/shared/utils-layer-arn by the Makefile. No default on
+      purpose: a stale fake ARN reaching CloudFormation is far worse than a
+      missing-parameter error.
+    AllowedPattern: '^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:layer:[a-zA-Z0-9._-]+:\d+$'
+  DecisionTimeoutSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 30
+    MaxValue: 604800
+    Description: >-
+      How long the workflow waits for a human decision before marking the badge
+      EXPIRED. Production would want days; the default is short so the expiry
+      branch can be demonstrated without waiting. Lower it further
+      (make deploy-badges DECISION_TIMEOUT=60) to see it in under two minutes.
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Architectures:
+      - arm64
+    Timeout: 10
+    MemorySize: 256
+    Layers:
+      - !Ref UtilsLayerArn
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref BadgesTable
+        # Pairs with Sourcemap: true in each function's BuildProperties, so a
+        # stack trace points at the TypeScript line rather than the transpiled
+        # one. sam build appends this on its own when Sourcemap is true; it is
+        # spelled out here so the template shows what the runtime actually gets.
+        NODE_OPTIONS: --enable-source-maps
+
+Resources:
+  BadgesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${AWS::StackName}-data'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: pokedex
+        - Key: Environment
+          Value: !Ref Env
+
+  BadgesDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Application
+          Value: pokedex
+        - Key: Environment
+          Value: !Ref Env
+
+  BadgesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-levels'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt BadgesDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Application
+          Value: pokedex
+        - Key: Environment
+          Value: !Ref Env
+
+  # The rule and the queue live in this template, not in the Levels one. The
+  # publisher owns the bus; every consumer owns its own subscription. That is
+  # what let this whole service be added without editing Levels beyond adding
+  # its bus, and it is what lets a fifth service be added without editing this.
+  LevelReachedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-level-reached'
+      Description: Sends reached levels to the Badges queue.
+      EventBusName: !Sub '{{resolve:ssm:/pokedex/${Env}/levels/event-bus-name}}'
+      EventPattern:
+        source:
+          - fr.pokemon.levels
+        detail-type:
+          - level.reached
+      State: ENABLED
+      Targets:
+        - Id: BadgesQueue
+          Arn: !GetAtt BadgesQueue.Arn
+          # EventBridge's own DLQ, for the hop between the bus and the queue.
+          # Distinct from the queue's redrive policy, which covers the hop
+          # between the queue and the function. Both can drop a message.
+          DeadLetterConfig:
+            Arn: !GetAtt BadgesDeadLetterQueue.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 3600
+            MaximumRetryAttempts: 10
+
+  BadgesQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BadgesQueue
+        - !Ref BadgesDeadLetterQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToSendMessages
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt BadgesQueue.Arn
+              - !GetAtt BadgesDeadLetterQueue.Arn
+            # Without this condition any rule in the account could post here.
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt LevelReachedRule.Arn
+
+  BadgesConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-consumer'
+      CodeUri: functions/badges-consumer/
+      Handler: badge.handler
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref BadgeValidationStateMachine
+      Policies:
+        - Statement:
+            # PutItem only. The consumer creates badges; it never decides them,
+            # so it has no business updating one.
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt BadgesTable.Arn
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Ref BadgeValidationStateMachine
+      Events:
+        LevelEvents:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BadgesQueue.Arn
+            BatchSize: 10
+            # Makes the { batchItemFailures: [...] } the handler returns
+            # meaningful. Without it, one failed message fails the whole batch
+            # and nine good events are redelivered for nothing.
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - badge.ts
+        # pokedex-utils is resolved at runtime from /opt/nodejs/node_modules.
+        # Without this line esbuild inlines the whole layer into every artifact
+        # and the layer stops being worth having.
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        # Overrides esbuild's own default of true. Minified output would make
+        # the stack field the logger writes to CloudWatch unreadable.
+        Minify: false
+        Sourcemap: true
+
+  # Invoked by the state machine with a callback token, and by nothing else. It
+  # has no API event and no queue: the only thing that can call it is the
+  # workflow, through the role below.
+  RegisterTokenFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-register-token'
+      CodeUri: functions/badges-token/
+      Handler: token.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt BadgesTable.Arn
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - token.ts
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        Minify: false
+        Sourcemap: true
+
+  # Step Functions requires a log group under /aws/vendedlogs/ for its delivery,
+  # and creating it here rather than letting the service create it is what makes
+  # the retention explicit and the group disappear with the stack.
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/vendedlogs/states/${AWS::StackName}-validation'
+      RetentionInDays: 14
+
+  BadgeValidationStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${AWS::StackName}-validation'
+      # STANDARD is not a preference. Express workflows do not support the
+      # callback pattern at all and cap out at five minutes, so a workflow that
+      # waits for a person cannot be Express.
+      Type: STANDARD
+      DefinitionUri: statemachine/badge-validation.asl.json
+      # The ASL file stays free of account and region specifics, so it is valid
+      # JSON on disk, lintable, and testable in the console against any stack.
+      DefinitionSubstitutions:
+        RegisterTokenFunctionArn: !GetAtt RegisterTokenFunction.Arn
+        BadgesTableName: !Ref BadgesTable
+        DecisionTimeoutSeconds: !Ref DecisionTimeoutSeconds
+      Logging:
+        Level: ALL
+        # False on purpose. Execution data carries the state input and output,
+        # and the input of RegisterDecision contains the callback token. A token
+        # in CloudWatch Logs is a leaked bearer credential: anybody who can read
+        # the log can resume the execution and decide in place of the human.
+        IncludeExecutionData: false
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RegisterTokenFunction
+        - Statement:
+            # UpdateItem only, and only on this table. The three terminal states
+            # are the only writes the workflow makes.
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt BadgesTable.Arn
+            # The exact set Step Functions needs to set up a log delivery. None
+            # of these support a resource-level restriction, which is why the
+            # resource is a wildcard here and nowhere else in this template.
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: '*'
+      Tags:
+        Application: pokedex
+        Environment: !Ref Env
+
+  BadgesApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      StageName: !Ref Env
+      EndpointConfiguration: REGIONAL
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            # The same user pool as the referential and Levels. Three APIs, one
+            # identity provider: a caller gets one token and uses it everywhere.
+            UserPoolArn: !Sub '{{resolve:ssm:/pokedex/${Env}/auth/user-pool-arn}}'
+
+  # Split from the read route on purpose. This is the only function in the
+  # project that can resume a paused execution, and states:SendTaskSuccess
+  # cannot be restricted to a resource - the token is the authorisation. Keeping
+  # it in the smallest function possible is the only scoping left.
+  PostDecisionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-decision'
+      CodeUri: functions/badges-decision/
+      Handler: decision.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:GetItem
+              Resource: !GetAtt BadgesTable.Arn
+            - Effect: Allow
+              Action: states:SendTaskSuccess
+              Resource: '*'
+      Events:
+        PostDecision:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BadgesApi
+            Path: /users/{userId}/badges/{badgeId}/decision
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes:
+                - pokedex/write
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - decision.ts
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        Minify: false
+        Sourcemap: true
+
+  GetBadgesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-get-badges'
+      CodeUri: functions/badges-api/
+      Handler: badges.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt BadgesTable.Arn
+      Events:
+        GetBadges:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BadgesApi
+            Path: /users/{userId}/badges
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+              AuthorizationScopes:
+                - pokedex/read
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - badges.ts
+        External:
+          - pokedex-utils
+        Target: es2023
+        Format: cjs
+        Minify: false
+        Sourcemap: true
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the Badges API.
+    Value: !Sub 'https://${BadgesApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Env}'
+  TableName:
+    Description: Name of the Badges DynamoDB table.
+    Value: !Ref BadgesTable
+  QueueUrl:
+    Description: URL of the level event queue.
+    Value: !Ref BadgesQueue
+  DeadLetterQueueUrl:
+    Description: URL of the dead-letter queue.
+    Value: !Ref BadgesDeadLetterQueue
+  StateMachineArn:
+    Description: ARN of the badge validation state machine.
+    Value: !Ref BadgeValidationStateMachine
+  DecisionTimeoutSeconds:
+    Description: Seconds the workflow waits for a decision before expiring the badge.
+    Value: !Ref DecisionTimeoutSeconds

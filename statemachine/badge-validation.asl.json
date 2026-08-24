@@ -1,0 +1,255 @@
+{
+  "Comment": "Holds a badge at PENDING until a person grants or refuses it, or until the decision deadline passes. Standard workflow: Express supports neither callbacks nor waits beyond five minutes.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "LoadBadge",
+  "States": {
+    "LoadBadge": {
+      "Type": "Pass",
+      "Comment": "Copies the execution input into a variable before anything can fail. Assign does not run when a state errors, so assigning inside RegisterDecision would leave the States.Timeout branch with no idea which badge to expire.",
+      "Assign": {
+        "badge": "{% $states.input %}"
+      },
+      "Next": "RegisterDecision"
+    },
+
+    "RegisterDecision": {
+      "Type": "Task",
+      "Comment": "Hands a callback token to a Lambda whose only job is to store it, then pauses. Nothing here polls or waits in code: the execution simply stops until SendTaskSuccess arrives with that token, whether that takes a minute or the whole timeout. The Retry covers transient invocation failures only - the wait itself cannot fail, it can only time out. The Catch on States.Timeout is what stops a badge sitting PENDING for up to a year because nobody decided.",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Arguments": {
+        "FunctionName": "${RegisterTokenFunctionArn}",
+        "Payload": {
+          "userId": "{% $badge.userId %}",
+          "level": "{% $badge.level %}",
+          "badgeId": "{% $badge.badgeId %}",
+          "taskToken": "{% $states.context.Task.Token %}"
+        }
+      },
+      "TimeoutSeconds": "{% $number('${DecisionTimeoutSeconds}') %}",
+      "Assign": {
+        "decision": "{% $states.result %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "Next": "ExpireBadge"
+        }
+      ],
+      "Next": "RouteDecision"
+    },
+
+    "RouteDecision": {
+      "Type": "Choice",
+      "Comment": "A refusal arrives through SendTaskSuccess with the decision in the payload, so it lands here rather than in a Catch. Routing a legitimate refusal through the error path would trigger Retry and Catch, which would be nonsense.",
+      "Choices": [
+        {
+          "Condition": "{% $decision.decision = 'GRANTED' %}",
+          "Next": "GrantBadge"
+        },
+        {
+          "Condition": "{% $decision.decision = 'REFUSED' %}",
+          "Next": "RefuseBadge"
+        }
+      ],
+      "Default": "UnexpectedDecision"
+    },
+
+    "GrantBadge": {
+      "Type": "Task",
+      "Comment": "Writes the outcome straight from the workflow. No Lambda: a function whose whole body is one UpdateItem is a cold start, an IAM role and a file of code bought for nothing, and it hides the write from the execution graph.",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${BadgesTableName}",
+        "Key": {
+          "PK": {
+            "S": "{% 'USER#' & $badge.userId %}"
+          },
+          "SK": {
+            "S": "{% 'BADGE#LEVEL#' & $string($badge.level) %}"
+          }
+        },
+        "UpdateExpression": "SET #status = :status, decidedAt = :decidedAt, decisionReason = :reason REMOVE taskToken",
+        "ConditionExpression": "#status = :pending",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "GRANTED"
+          },
+          ":pending": {
+            "S": "PENDING"
+          },
+          ":decidedAt": {
+            "S": "{% $decision.decidedAt %}"
+          },
+          ":reason": {
+            "S": "{% $decision.reason %}"
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.InternalServerError"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "AlreadySettled"
+        }
+      ],
+      "End": true
+    },
+
+    "RefuseBadge": {
+      "Type": "Task",
+      "Comment": "Identical to GrantBadge but for the status. A refused badge is a normal, recorded outcome, not an error.",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${BadgesTableName}",
+        "Key": {
+          "PK": {
+            "S": "{% 'USER#' & $badge.userId %}"
+          },
+          "SK": {
+            "S": "{% 'BADGE#LEVEL#' & $string($badge.level) %}"
+          }
+        },
+        "UpdateExpression": "SET #status = :status, decidedAt = :decidedAt, decisionReason = :reason REMOVE taskToken",
+        "ConditionExpression": "#status = :pending",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "REFUSED"
+          },
+          ":pending": {
+            "S": "PENDING"
+          },
+          ":decidedAt": {
+            "S": "{% $decision.decidedAt %}"
+          },
+          ":reason": {
+            "S": "{% $decision.reason %}"
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.InternalServerError"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "AlreadySettled"
+        }
+      ],
+      "End": true
+    },
+
+    "ExpireBadge": {
+      "Type": "Task",
+      "Comment": "Reached only from the States.Timeout catch, which is why it reads $badge rather than the state input - the input here is the error, not the badge.",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${BadgesTableName}",
+        "Key": {
+          "PK": {
+            "S": "{% 'USER#' & $badge.userId %}"
+          },
+          "SK": {
+            "S": "{% 'BADGE#LEVEL#' & $string($badge.level) %}"
+          }
+        },
+        "UpdateExpression": "SET #status = :status, decidedAt = :decidedAt, decisionReason = :reason REMOVE taskToken",
+        "ConditionExpression": "#status = :pending",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "EXPIRED"
+          },
+          ":pending": {
+            "S": "PENDING"
+          },
+          ":decidedAt": {
+            "S": "{% $now() %}"
+          },
+          ":reason": {
+            "S": "Nobody decided before the deadline."
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.InternalServerError"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "AlreadySettled"
+        }
+      ],
+      "End": true
+    },
+
+    "AlreadySettled": {
+      "Type": "Succeed",
+      "Comment": "The conditional write found a status other than PENDING, which means the race between a decision and the timeout was lost. Losing that race is a normal outcome - exactly one branch must win - so the execution succeeds instead of failing."
+    },
+
+    "UnexpectedDecision": {
+      "Type": "Fail",
+      "Comment": "Defence in depth. The decision route only ever accepts GRANTED or REFUSED, so reaching this state means something bypassed the API.",
+      "Error": "UnexpectedDecision",
+      "Cause": "The decision payload carried neither GRANTED nor REFUSED."
+    }
+  }
+}

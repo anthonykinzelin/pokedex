@@ -35,6 +35,29 @@ Globals:
         NODE_OPTIONS: --enable-source-maps
 
 Resources:
+  # The Levels service owns its own bus, exactly as the referential owns the one
+  # it publishes purchases on. A service publishes on a bus it controls; it never
+  # writes onto a neighbour's.
+  LevelsEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub '${AWS::StackName}-events'
+
+  # Published at the path the brief fixes, so the Badges stack can resolve the
+  # bus name with {{resolve:ssm}} and stay deployable on its own. Nothing is
+  # exported with Fn::ImportValue: an export would let the Badges stack pin this
+  # one and block its update or deletion.
+  LevelsEventBusNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/pokedex/${Env}/levels/event-bus-name'
+      Type: String
+      Value: !Ref LevelsEventBus
+      Description: Event bus used by services that consume levels events.
+      Tags:
+        Application: pokedex
+        Environment: !Ref Env
+
   LevelsTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Delete
@@ -138,6 +161,9 @@ Resources:
       FunctionName: !Sub '${AWS::StackName}-consumer'
       CodeUri: functions/levels-consumer/
       Handler: progression.handler
+      Environment:
+        Variables:
+          EVENT_BUS_NAME: !Ref LevelsEventBus
       Policies:
         - Statement:
             - Effect: Allow
@@ -146,6 +172,12 @@ Resources:
                 - dynamodb:PutItem
                 - dynamodb:UpdateItem
               Resource: !GetAtt LevelsTable.Arn
+            # Scoped to this one bus. events:PutEvents on "*" would let the
+            # function publish onto any bus in the account, including the
+            # referential's, and forge a purchase event.
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !GetAtt LevelsEventBus.Arn
       Events:
         PurchaseEvents:
           Type: SQS
@@ -234,3 +266,9 @@ Outputs:
   DeadLetterQueueUrl:
     Description: URL of the dead-letter queue.
     Value: !Ref LevelsDeadLetterQueue
+  EventBusName:
+    Description: EventBridge bus used for levels events.
+    Value: !Ref LevelsEventBus
+  EventBusArn:
+    Description: ARN of the EventBridge bus.
+    Value: !GetAtt LevelsEventBus.Arn

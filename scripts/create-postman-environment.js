@@ -7,6 +7,7 @@ const profile = process.env.AWS_PROFILE || 'germen-dev-anthonyk';
 const authStack = process.env.AUTH_STACK || 'pokedex-auth-dev';
 const appStack = process.env.APP_STACK || 'pokedex-app-dev';
 const levelsStack = process.env.LEVELS_STACK || 'pokedex-levels-dev';
+const badgesStack = process.env.BADGES_STACK || 'pokedex-badges-dev';
 const environmentName = process.env.ENV || 'dev';
 
 function aws(...args) {
@@ -39,6 +40,7 @@ function stackOutputs(stackName) {
 const auth = stackOutputs(authStack);
 const app = stackOutputs(appStack);
 const levels = stackOutputs(levelsStack);
+const badges = stackOutputs(badgesStack);
 const clientSecret = aws(
   'cognito-idp',
   'describe-user-pool-client',
@@ -53,14 +55,16 @@ const environment = {
   values: [
     { key: 'api_base_url', value: app.ApiUrl, enabled: true },
     { key: 'levels_api_base_url', value: levels.ApiUrl, enabled: true },
+    { key: 'badges_api_base_url', value: badges.ApiUrl, enabled: true },
     { key: 'auth_domain', value: auth.AuthDomain, enabled: true },
     { key: 'client_id', value: auth.UserPoolClientId, enabled: true },
     { key: 'client_secret', value: clientSecret, enabled: true, type: 'secret' },
     { key: 'scope', value: 'pokedex/read pokedex/write', enabled: true },
     { key: 'access_token', value: '', enabled: true, type: 'secret' },
-    // user_id, pokemon_id and the names are deliberately absent. They are set
-    // at run time by the collection, and an environment variable would take
-    // precedence over the collection variable and shadow the captured value.
+    // user_id, pokemon_id, badge_id and the names are deliberately absent. They
+    // are set at run time by the collection, and an environment variable would
+    // take precedence over the collection variable and shadow the captured
+    // value.
   ],
   _postman_variable_scope: 'environment',
 };

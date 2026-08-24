@@ -4,6 +4,7 @@ import {
   errorResponse,
   getItem,
   jsonResponse,
+  levelFor,
   requireEnv,
   requireString,
 } from 'pokedex-utils';
@@ -14,7 +15,7 @@ const TABLE_NAME = requireEnv('TABLE_NAME');
 // item, so naming them here would be a second, drifting definition.
 interface LevelItem {
   points?: number;
-  level?: number;
+  publishedLevel?: number;
   updatedAt?: string;
 }
 
@@ -35,7 +36,14 @@ export const handler: APIGatewayProxyHandler = async (event, context) => {
     return jsonResponse(200, {
       userId,
       points: item?.points || 0,
-      level: item?.level || 0,
+      // Computed here rather than read from the item, with the same helper the
+      // consumer uses. The level is a function of the points, so storing it
+      // would only create a second value that can disagree with the first.
+      level: levelFor(item?.points),
+      // What Badges has been told about, which can lag the level above by one
+      // while an event is still in flight. Exposed because it is the difference
+      // between "no badge yet" and "the badge is genuinely missing".
+      publishedLevel: item?.publishedLevel || 0,
       updatedAt: item?.updatedAt || null,
     });
   } catch (error) {

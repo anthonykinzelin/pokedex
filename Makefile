@@ -5,6 +5,12 @@ AUTH_STACK := pokedex-auth-$(ENV)
 SHARED_STACK := pokedex-shared-$(ENV)
 APP_STACK := pokedex-app-$(ENV)
 LEVELS_STACK := pokedex-levels-$(ENV)
+BADGES_STACK := pokedex-badges-$(ENV)
+
+# How long the badge workflow waits for a human decision. The template's own
+# default is 300; override it to demonstrate the expiry branch quickly:
+#   make deploy-badges DECISION_TIMEOUT=60
+DECISION_TIMEOUT ?= 300
 
 UTILS_LAYER_PARAM := /pokedex/$(ENV)/shared/utils-layer-arn
 UTILS_LAYER_NAME := $(SHARED_STACK)-utils
@@ -31,23 +37,24 @@ TSC := $(CURDIR)/node_modules/.bin/tsc
 .NOTPARALLEL:
 
 .PHONY: help validate compile build test aws-check layer-arn deploy deploy-auth \
-	deploy-shared deploy-app deploy-levels postman outputs clean-stack clean-levels \
-	clean-app clean-shared clean-layers clean-auth clean-dist
+	deploy-shared deploy-app deploy-levels deploy-badges postman outputs clean-stack \
+	clean-badges clean-levels clean-app clean-shared clean-layers clean-auth clean-dist
 
 help:
 	@echo "make aws-check     Check the AWS account"
 	@echo "make compile       Compile the TypeScript and type-check the handlers"
-	@echo "make deploy        Deploy the four stacks (auth -> shared -> app -> levels)"
+	@echo "make deploy        Deploy the five stacks (auth -> shared -> app -> levels -> badges)"
 	@echo "make layer-arn     Print the shared utils layer ARN currently in SSM"
 	@echo "make test          Run the unit tests"
 	@echo "make outputs       Show the deployed URLs and IDs"
-	@echo "make clean-stack   Delete the four stacks and prune retained layer versions"
+	@echo "make clean-stack   Delete the five stacks and prune retained layer versions"
 
 validate:
 	sam validate --lint --template-file template-auth.yaml
 	sam validate --lint --template-file template-shared.yaml
 	sam validate --lint --template-file template-pokedex.yaml
 	sam validate --lint --template-file template-levels.yaml
+	sam validate --lint --template-file template-badges.yaml
 
 # The handlers are transpiled by esbuild inside sam build, and esbuild does no
 # type checking at all - so tsc is the only thing standing between a type error
@@ -68,6 +75,8 @@ build: validate compile
 		--parameter-overrides Env=$(ENV) UtilsLayerArn=$(PLACEHOLDER_LAYER_ARN)
 	sam build --template-file template-levels.yaml --build-dir .aws-sam/levels \
 		--parameter-overrides Env=$(ENV) UtilsLayerArn=$(PLACEHOLDER_LAYER_ARN)
+	sam build --template-file template-badges.yaml --build-dir .aws-sam/badges \
+		--parameter-overrides Env=$(ENV) UtilsLayerArn=$(PLACEHOLDER_LAYER_ARN)
 
 # The suites require('pokedex-utils'), which resolves through the node_modules
 # symlink to layers/pokedex-utils/dist, so the layer has to be compiled first.
@@ -87,6 +96,7 @@ deploy: aws-check
 	$(MAKE) deploy-shared
 	$(MAKE) deploy-app
 	$(MAKE) deploy-levels
+	$(MAKE) deploy-badges
 	$(MAKE) postman
 	$(MAKE) outputs
 
@@ -130,9 +140,25 @@ deploy-levels: compile
 		--stack-name $(LEVELS_STACK) \
 		--parameter-overrides Env=$(ENV) UtilsLayerArn=$$LAYER_ARN
 
+# The Badges stack has to exist before this runs: deploy-badges creates the
+# state machine whose ARN and API URL the collection needs.
+deploy-badges: compile
+	@set -e ; \
+	LAYER_ARN=$$($(AWS) ssm get-parameter --name $(UTILS_LAYER_PARAM) \
+		--query Parameter.Value --output text) ; \
+	test -n "$$LAYER_ARN" || { echo "$(UTILS_LAYER_PARAM) is missing. Run 'make deploy-shared' first." >&2 ; exit 1 ; } ; \
+	echo "Using layer $$LAYER_ARN, decision timeout $(DECISION_TIMEOUT)s" ; \
+	sam build --template-file template-badges.yaml --build-dir .aws-sam/badges \
+		--parameter-overrides Env=$(ENV) UtilsLayerArn=$$LAYER_ARN ; \
+	$(SAM_DEPLOY) --template-file .aws-sam/badges/template.yaml \
+		--stack-name $(BADGES_STACK) \
+		--parameter-overrides Env=$(ENV) UtilsLayerArn=$$LAYER_ARN \
+			DecisionTimeoutSeconds=$(DECISION_TIMEOUT)
+
 postman:
 	AWS_REGION=$(REGION) AWS_PROFILE=$(PROFILE) AUTH_STACK=$(AUTH_STACK) \
-		APP_STACK=$(APP_STACK) LEVELS_STACK=$(LEVELS_STACK) ENV=$(ENV) \
+		APP_STACK=$(APP_STACK) LEVELS_STACK=$(LEVELS_STACK) \
+		BADGES_STACK=$(BADGES_STACK) ENV=$(ENV) \
 		node scripts/create-postman-environment.js
 
 outputs:
@@ -144,6 +170,11 @@ outputs:
 		--query "Stacks[0].Outputs[].{Name:OutputKey,Value:OutputValue}" --output table
 	@$(AWS) cloudformation describe-stacks --stack-name $(LEVELS_STACK) \
 		--query "Stacks[0].Outputs[].{Name:OutputKey,Value:OutputValue}" --output table
+	@$(AWS) cloudformation describe-stacks --stack-name $(BADGES_STACK) \
+		--query "Stacks[0].Outputs[].{Name:OutputKey,Value:OutputValue}" --output table
+
+clean-badges:
+	sam delete --stack-name $(BADGES_STACK) --region $(REGION) --profile $(PROFILE) --no-prompts
 
 clean-levels:
 	sam delete --stack-name $(LEVELS_STACK) --region $(REGION) --profile $(PROFILE) --no-prompts
@@ -171,6 +202,7 @@ clean-auth:
 
 # Reverse dependency order, so the functions using the layer are gone before it.
 clean-stack:
+	-$(MAKE) clean-badges
 	-$(MAKE) clean-levels
 	-$(MAKE) clean-app
 	-$(MAKE) clean-shared
